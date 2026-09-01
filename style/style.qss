@@ -1,0 +1,207 @@
+/* ===== 轻提词 (MicroPrompt) — Win11 风格样式表 ===== */
+
+/* 全局背景 */
+QMainWindow, QWidget#centralWidget {
+    background-color: #F3F3F3;
+}
+
+/* ===== 顶部工具栏（自定义无边框标题栏） ===== */
+QWidget#topBar {
+    background-color: #FAFAFA;
+    border-bottom: 1px solid #E5E5E5;
+}
+
+QLabel#appLogo {
+    background: transparent;
+}
+
+/* 顶部中间：当前笔记名称（纯文字，无边框无背景） */
+QLabel#noteNameLabel {
+    color: #1A1A1A;
+    font-size: 10px;
+    font-weight: 400;
+    background: transparent;
+}
+
+/* 顶部中间：保存状态（编辑/保存中，半透明黑） */
+QLabel#noteStatusLabel {
+    color: rgba(0, 0, 0, 128);
+    font-size: 9px;
+    font-weight: 400;
+    background: transparent;
+}
+
+/* ===== 右键菜单 =====
+ * 菜单底色用浅灰（贴合整体配色），白色圆角菜单项"兜"在灰底上，
+ * 避免菜单透出下层界面；二级菜单（颜色选项）同样继承此样式 */
+QMenu {
+    background-color: #F0F0F0;
+    border: 1px solid #D8D8D8;
+    border-radius: 8px;
+    padding: 6px;
+}
+
+QMenu::item {
+    background-color: #FFFFFF;
+    border-radius: 5px;
+    margin: 2px 4px;
+    padding: 7px 24px 7px 10px;
+    color: #1A1A1A;
+    font-size: 12px;
+}
+
+QMenu::item:selected {
+    background-color: #E8ECF3;
+    color: #1A1A1A;
+}
+
+QMenu::item:checked {
+    background-color: #FFFFFF;
+}
+
+QMenu::separator {
+    height: 1px;
+    background: #D8D8D8;
+    margin: 5px 8px;
+}
+
+QMenu::indicator {
+    width: 14px;
+    height: 14px;
+}
+
+/* ===== 输入对话框 ===== */
+QInputDialog QLineEdit {
+    border: 1px solid #C8C8C8;
+    border-radius: 5px;
+    padding: 5px 8px;
+    font-size: 13px;
+    background-color: #FFFFFF;
+}
+
+QInputDialog QLineEdit:focus {
+    border-color: #B0B0B0;
+}
+
+/* ===== 消息框 ===== */
+QMessageBox {
+    background-color: #FFFFFF;
+}
+
+QMessageBox QLabel {
+    color: #1A1A1A;
+    font-size: 13px;
+}
+
+/* ===== 通用按钮 ===== */
+QPushButton {
+    background-color: #FFFFFF;
+    border: 1px solid #D1D1D1;
+    border-radius: 6px;
+    padding: 4px 14px;
+    color: #1A1A1A;
+    font-size: 12px;
+}
+
+QPushButton:hover {
+    background-color: #F0F4F9;
+    border-color: #B0B0B0;
+}
+
+QPushButton:pressed {
+    background-color: #E0E7F0;
+    border-color: #A0A0A0;
+}
+
+/* ===== 左侧笔记列表面板 ===== */
+QWidget#listPanel {
+    background-color: #FAFAFA;
+    border-right: 1px solid #E5E5E5;
+}
+
+QLabel#listHeader {
+    color: #666666;
+    font-size: 10px;
+    font-weight: 600;
+    border-bottom: 1px solid #E5E5E5;
+    padding-left: 4px;
+}
+
+QScrollArea {
+    background-color: transparent;
+    border: none;
+}
+
+/* 滚动条由 AutoHideScrollBar 自绘（细黑线 + 淡入淡出），此处不再设置 QScrollBar 样式 */
+
+/* ===== 笔记卡片 ===== */
+QFrame#noteCard {
+    border-radius: 6px;
+    background-color: transparent;
+}
+
+QLabel#cardTitle {
+    color: #1A1A1A;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+QLabel#cardDate {
+    color: #AAAAAA;
+    font-size: 9px;
+}
+
+/* ===== 右侧编辑器面板 ===== */
+QWidget#editorPanel {
+    background-color: #FFFFFF;
+}
+
+QWidget#editorToolbar {
+    background-color: #FAFAFA;
+    border-bottom: 1px solid #E5E5E5;
+}
+
+/* 工具按钮 */
+QToolButton {
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    padding: 2px;
+    font-size: 12px;
+}
+
+QToolButton:hover {
+    background-color: #F0F0F0;
+    border-color: #E0E0E0;
+}
+
+QToolButton:checked {
+    background-color: #FFFFFF;
+    border-color: #D8D8D8;
+}
+
+QToolButton:pressed {
+    background-color: #F5F5F5;
+}
+
+/* ===== 分割线 ===== */
+QSplitter::handle {
+    background-color: #E5E5E5;
+}
+
+QSplitter::handle:horizontal {
+    width: 1px;
+}
+
+/* ===== QTextEdit ===== */
+QTextEdit#noteEdit {
+    border: none;
+    selection-background-color: #F0F0F0;
+    selection-color: #1A1A1A;
+}
+
+/* ===== 启动动画画面 ===== */
+QLabel#splashLogo {
+    background: transparent;
+}
+

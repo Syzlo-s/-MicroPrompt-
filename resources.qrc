@@ -1,0 +1,21 @@
+<RCC>
+    <qresource prefix="/">
+        <file>style/style.qss</file>
+        <file>icons/app-logo.svg</file>
+        <file>icons/arrow-down.svg</file>
+        <file>icons/bold.svg</file>
+        <file>icons/chuangjian.svg</file>
+        <file>icons/close.svg</file>
+        <file>icons/divider.svg</file>
+        <file>icons/font-size.svg</file>
+        <file>icons/maximize.svg</file>
+        <file>icons/minimize.svg</file>
+        <file>icons/palette.svg</file>
+        <file>icons/pen.svg</file>
+        <file>icons/pin.svg</file>
+        <file>icons/restore.svg</file>
+        <file>icons/shanchu.svg</file>
+        <file>icons/strikethrough.svg</file>
+        <file>icons/underline.svg</file>
+    </qresource>
+</RCC>

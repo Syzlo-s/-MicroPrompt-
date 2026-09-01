@@ -1,0 +1,13 @@
+# 临时/辅助文件（不随仓库上传）
+.git-global-cfg
+.gitconfig.backup
+_compile.bat
+*.tmp
+*.bak
+crash.log
+
+# 编译中间产物
+CMakeFiles/
+build/
+cmake_install.cmake
+CMakeCache.txt

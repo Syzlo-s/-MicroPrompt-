@@ -1,0 +1,2 @@
+// Windows 资源文件 —— 设置 exe 双击打开图标
+IDI_ICON1 ICON DISCARDABLE "icons/favicon.ico"
