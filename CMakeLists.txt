@@ -15,32 +15,32 @@ endif()
 find_package(Qt6 REQUIRED COMPONENTS Widgets Svg)
 
 set(SOURCES
-    main.cpp
-    MainWindow.cpp
-    NoteManager.cpp
-    NoteListWidget.cpp
-    NoteEditor.cpp
-    PinButton.cpp
-    TitleBarButton.cpp
-    SvgIconLoader.cpp
-    SplashScreen.cpp
-    CrashHandler.cpp
-    SoundUtil.cpp
-    AutoHideScrollBar.cpp
+    src/main.cpp
+    src/MainWindow.cpp
+    src/NoteManager.cpp
+    src/NoteListWidget.cpp
+    src/NoteEditor.cpp
+    src/PinButton.cpp
+    src/TitleBarButton.cpp
+    src/SvgIconLoader.cpp
+    src/SplashScreen.cpp
+    src/CrashHandler.cpp
+    src/SoundUtil.cpp
+    src/AutoHideScrollBar.cpp
 )
 
 set(HEADERS
-    MainWindow.h
-    NoteManager.h
-    NoteListWidget.h
-    NoteEditor.h
-    PinButton.h
-    TitleBarButton.h
-    SvgIconLoader.h
-    SplashScreen.h
-    CrashHandler.h
-    SoundUtil.h
-    AutoHideScrollBar.h
+    src/MainWindow.h
+    src/NoteManager.h
+    src/NoteListWidget.h
+    src/NoteEditor.h
+    src/PinButton.h
+    src/TitleBarButton.h
+    src/SvgIconLoader.h
+    src/SplashScreen.h
+    src/CrashHandler.h
+    src/SoundUtil.h
+    src/AutoHideScrollBar.h
 )
 
 set(RESOURCES resources.qrc)
