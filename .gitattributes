@@ -1,0 +1,37 @@
+# ─────────────────────────────────────────────────────────────────────
+# GitHub 语言统计（Linguist）配置
+#
+# 本仓库的 C++/Qt6 版本（2026-09 之前）保留在 `main` 分支，属于历史遗留。
+# Linguist 会统计**所有分支**，若不排除，仓库语言条会一直显示 C++，
+# 无法反映当前实际在维护的技术栈（Tauri 2 + React 19 + TypeScript）。
+#
+# 这里把旧版 C++ 源码标记为「不参与统计」，语言条即按 v4 分支的
+# TypeScript / Rust 正确显示。旧代码本身不受影响，仍可正常查看与下载。
+# ─────────────────────────────────────────────────────────────────────
+
+# 旧版 C++/Qt6 源码（保留在 main 分支，不计入语言统计）
+*.cpp           linguist-detectable=false
+*.cc            linguist-detectable=false
+*.cxx           linguist-detectable=false
+*.h             linguist-detectable=false
+*.hpp           linguist-detectable=false
+*.hxx           linguist-detectable=false
+*.c             linguist-detectable=false
+CMakeLists.txt  linguist-detectable=false
+*.qmake         linguist-detectable=false
+*.pro           linguist-detectable=false
+*.ui            linguist-detectable=false
+
+# 旧版的二进制运行库（Qt6 / MinGW 一堆 DLL），本就不该进版本库
+*.dll           linguist-vendored
+*.exe           linguist-vendored
+*.lib           linguist-vendored
+*.a             linguist-vendored
+
+# 构建产物（若被误提交）
+dist/**         linguist-generated
+src-tauri/gen/** linguist-generated
+
+# 文档与样式
+*.md            linguist-documentation
+*.qss           linguist-detectable=false
