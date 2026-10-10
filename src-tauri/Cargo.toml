@@ -1,0 +1,30 @@
+[package]
+name = "microprompt-v4"
+version = "4.0.2"
+description = "轻提词 (MicroPrompt) V4.0 — Tauri + React 桌面速记"
+authors = ["MicroPrompt Team"]
+edition = "2021"
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "microprompt_v4_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 构建速度优化：
+#   原 fat LTO (lto=true) + codegen-units=1 会在每次改动前端后重链接时耗时数分钟。
+#   改为 thin LTO + 并行 codegen，构建明显更快，体积/性能几乎无损。
+[profile.release]
+codegen-units = 16
+lto = "thin"
+opt-level = "s"
+strip = true
