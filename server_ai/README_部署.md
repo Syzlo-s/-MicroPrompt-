@@ -13,6 +13,7 @@
 | `ai_server.py` | 服务主体（Python3 标准库，无第三方依赖，**兼容服务器上的 Python 3.6.8**）；同时提供管理后台页面 `/admin` |
 | `admin_cli.py` | 管理员工具（命令行）：看订单 / 确认收款 / 手工加天数 / 查用户 |
 | `selfcheck.py` | 部署自检：一条命令确认新代码到底生效没有 |
+| `tests/` | 规则回归（17 组 / 35 项，见第二节末尾）；只在本地跑，不参与部署 |
 | `.env.example` | 环境变量模板（服务端不自动读 .env，需按说明 export） |
 | `data/` | 运行时自动创建：用户、会员、用量、订单、管理员密钥、收款码、自动备份 |
 
@@ -49,19 +50,69 @@ MP_ADMIN_KEY='你自己设一个长密钥' python3 selfcheck.py
 > 启动失败排查：日志里出现「启动失败：未设置 MP_DEEPSEEK_KEY 环境变量」，
 > 就是第 3 步漏了 `MP_DEEPSEEK_KEY`（4.0.2 起源码里不再内置 Key）。
 
-自检输出应该是 6 项全 `[OK]`；如果提示
+自检输出应该是 10 项全 `[OK]`；如果提示
 「`/ai/health 不存在（http=501）`」，说明服务器上跑的还是 4.0.0 旧代码，
 重新上传 `ai_server.py` 并重启即可。
 
-启动日志里会打印：端口、数据目录、Casdoor 地址、免费额度、会员日上限、**管理员密钥**。
+### 改完服务端怎么自测（不用碰线上）
+
+`tests/` 下有一套自动回归，**只依赖 Python 标准库**，跑起来会自己拉起
+假的 Casdoor 与多个服务实例（全程 `MP_MOCK=1`，不会调用 DeepSeek、不会花钱，
+也不会碰真实的 `data/`）：
+
+```bash
+cd /home/admin/ai_server      # 或本机 server_ai 目录
+python3 tests/test_rules.py      # 18 组 / 46 项检查：额度、订单、会员、备份（老的回归）
+python3 tests/test_accounts.py   # 11 组 / 71 项检查：注册、登录、令牌、兼容层、防爆破、账号管理（4.1.0 新增，4.1.1 加中文用户名用例）
+```
+
+覆盖：免费额度与跨天重置、并发抢额度（不会超发）、订单复用与恢复、确认幂等
+（手滑点两次不重复加天数）、越权保护、会员上限、失败退款、数据备份与**损坏自动恢复**、
+管理命令行与后台页面、缺 Key 拒绝启动、超长文本不扣额度、**免费不限量与用量重置**；
+以及 4.1.0 的账号体系：注册校验、登录话术统一、`alg=none`/换密钥/过期/篡改令牌全被拒、
+旧令牌在改密/停用后立刻失效、同名与同 IP 双维度防爆破、头像魔数与体积校验、
+账号管理接口的 403 保护、重启后账号与资料仍在。
+
+> 端口：套件里的实例（含假 Casdoor）都用 `free_port()` 动态挑空闲端口，不写死 2589-2600——
+> 否则会被 Hyper-V/WinNAT 保留段或已退出进程留下的 Bound 套接字占住，
+> 表现为 `http=0` 的假失败（4.0.3 起已修正）。
+
+> 改完 `ai_server.py` 先跑它，再上传部署，能挡掉绝大多数低级错误。
+
+#### 后台面板冒烟（可选，需要 Node ≥22 + 本机 Chrome/Edge）
+
+Python 回归只验到「页面标记存在、JS 引用的 id 都存在」；下面这个脚本用**真实浏览器**把
+`/admin` 点一遍，验运行期行为（含原生 confirm 文案、列表刷新、以及 `data/*.json` 真的变了）：
+
+```bash
+node tests/admin_panel_smoke.mjs        # 本地模式：自建临时服务端 + 种子数据 → 54 项全过，退出码 0
+```
+
+部署后从自己电脑验线上面板（**只读**，不会改动任何真实账号数据）：
+
+```powershell
+cd 轻提词V4.0\server_ai
+$env:MP_PANEL_URL='http://8.163.51.216:2581/admin'; $env:MP_ADMIN_KEY='<你的管理员密钥>'
+node tests/admin_panel_smoke.mjs        # 只读模式 8 项：能开、标题对、密钥有效、列表/空态正常、表头是 4.1.0、账号按钮在、无 JS 报错、无 5xx
+```
+
+> 本地模式（不填 `MP_PANEL_URL`）会自建临时服务端 + 种子数据，
+> 连**账号管理按钮**（重置密码 / 停用 / 启用 / 踢下线 / 备注 / 新建账号）一起点一遍，
+> 并核对磁盘上的 `data/*.json` 与「临时密码真能登录、旧密码真失效」，共 **54 项**。
+
+启动日志里会打印：端口、数据目录、账号模式、免费额度、会员日上限、
+**管理员密钥**（4.1.0 起只打印后 4 位，完整密钥在 `data/admin_key.txt`，权限 600）。
 
 > 如果不想每次都在命令行写密钥，就放在一个固定文件里：
 > `echo "你的密钥" > /home/admin/ai_server/admin_key.txt`（服务启动时会读它）。
 
 ### 端口与防火墙
 - 仍然是 **2581/TCP**（服务器 firewalld + 阿里云安全组已放行，无需改动）。
-- 服务端要能访问 **127.0.0.1:2580**（本机 Casdoor）来校验登录凭证；
+- **2580/TCP 也要放行**：4.1.0 起它由 `ai_server.py` 自己监听（接管原先 Casdoor 的地址），
+  客户端里 `VITE_CASDOOR_URL` 写死的就是这个端口。
+- `MP_AUTH_MODE=casdoor`（默认）时服务端要能访问 **127.0.0.1:2580**（本机 Casdoor）来校验登录凭证；
   如果 Casdoor 不在本机，用 `MP_CASDOOR_URL=http://<服务器IP>:2580` 指定。
+  `MP_AUTH_MODE=builtin` 时不再需要访问任何外部账号服务。
 
 ### 两个已知坑（本版已处理 / 需注意）
 1. **旧版是单线程**：`HTTPServer` 一次只能处理一个请求，一个慢的 DeepSeek 调用
@@ -75,7 +126,15 @@ MP_ADMIN_KEY='你自己设一个长密钥' python3 selfcheck.py
 |---|---|---|
 | `MP_ADMIN_KEY` | 自动生成 | 管理员密钥（管理接口用，**不要外泄**） |
 | `MP_DATA_DIR` | 脚本同目录 `/data` | 数据目录 |
-| `MP_CASDOOR_URL` | `http://127.0.0.1:2580` | Casdoor 地址 |
+| `MP_AUTH_MODE` | `casdoor` | `casdoor` = 令牌仍由 Casdoor 校验（行为与 4.0.x 完全一致）；`builtin` = 用自建账号体系（登录 / 注册 / 校验全在本服务） |
+| `MP_AUTH_PORT` | `2580` | `builtin` 模式下账号接口的监听端口（`0` = 不监听；与主端口冲突会自动跳过并打印警告） |
+| `MP_AUTH_CLIENT_ID` | `b49640f6c4dabd78ce94` | 账号接口的 client_id（只做「是否存在」检查，客户端写死的值） |
+| `MP_AUTH_CLIENT_SECRET` | 空 | 留空 = 不校验 secret（客户端仍会带，兼容用） |
+| `MP_JWT_TTL_SEC` | `604800` | 自签令牌有效期（7 天） |
+| `MP_PBKDF2_ITERS` | `120000` | 密码哈希迭代次数（低配机器可降到 80000，实测 120000 登录约 90 ms） |
+| `MP_LOGIN_MAX_FAIL` / `MP_LOGIN_LOCK_SEC` | `5` / `600` | 同一用户名连续失败几次锁多久（锁定期内即使密码正确也拒绝） |
+| `MP_IP_MAX_FAIL` / `MP_FAIL_WINDOW_SEC` | `20` / `900` | 同一 IP 在窗口内累计失败多少次要被限速（防分布式猜密码） |
+| `MP_CASDOOR_URL` | `http://127.0.0.1:2580` | Casdoor 地址（仅 `casdoor` 模式使用） |
 | `MP_FREE_DAILY` | `3` | 未付费用户每天免费次数 |
 | `MP_MEMBER_DAILY_CAP` | `300` | 会员防滥用日上限 |
 | `MP_RATE_LIMIT_SEC` | `2` | 同一用户两次调用最小间隔（秒） |
@@ -90,25 +149,82 @@ MP_ADMIN_KEY='你自己设一个长密钥' python3 selfcheck.py
 |---|---|
 | 未付费 | 每天 **3 次**（北京时间 0 点重置），超出返回 `402 free_exhausted` |
 | 会员 | 正常使用不限量，但设 **300 次/天** 防滥用上限（超出返回 `402 member_cap`） |
+| 免费不限量 | 你在后台按账号开通（`/admin` → 用户与 AI 额度）；不受每天 3 次限制，仍保留 2 秒最小调用间隔 |
 | 所有人 | 两次调用最小间隔 2 秒（返回 `429 rate_limited`）；单次文本上限 2 万字符 |
-| 身份 | 必须带 Casdoor `access_token`，校验失败返回 `401 auth` |
+| 身份 | 必须带登录 `access_token`（`casdoor` 模式由 Casdoor 校验，`builtin` 模式由本服务自签自校验），校验失败返回 `401 auth` |
+| 已停用账号 | `builtin` 模式下即使密码正确也拒绝登录（`该账号已被停用，请联系客服`）；已签发的旧令牌立刻失效 |
 
-> 说明：AI 只对**云端账号**开放。本机离线账号（`local:` 前缀）在服务端无法验证身份，
-> 客户端会直接提示「请使用云端账号登录后再用 AI」。
+> 说明：AI 只对**云端账号**开放。
+> **4.0.3 起客户端已彻底移除「本机离线账号」**：注册 / 登录一律走云端账号，
+> 旧的 `local:*` / `local-admin` 登录态在启动时会被清除并要求重新登录，
+> 因此不会再出现「下载软件后提示本机离线账号、AI 润色用不了」的情况。
+
+---
+
+## 二·五、自建账号体系（4.1.0；4.1.1 修注册）
+
+> **4.1.1 变更**：用户名放开**中文**（1-32 位，中英文/数字/`_`/`-`，首尾不能是 `_` 或 `-`；
+> 单字用户名也允许，例如「吴」）；报错改成整句「用户名不符合要求：…」/「密码不符合要求：至少 8 位」；
+> 客户端注册页同步显示规则。老客户端（4.0.3）不升级也能用中文名注册——规则是在服务端放开的。
+
+`MP_AUTH_MODE=builtin` 后，账号相关请求全部由 `ai_server.py` 在 **2580** 端口处理
+（`MP_AUTH_PORT` 可改，`0` 表示不监听）。客户端一行都不用改：它只调下面 5 个接口。
+
+| 接口 | 客户端用途 | 关键约定 |
+|---|---|---|
+| `POST /api/signup` | 注册 | JSON 请求体；用户名 **1-32 位**、可用**中英文/数字/`_`/`-`**（首尾不能是 `_` 或 `-`）；密码 ≥8 位（4.1.1 起放开中文与单字用户名） |
+| `POST /api/login/oauth/access_token` | 登录 | `application/x-www-form-urlencoded`；返回 `{access_token, expires_in, token_type}` |
+| `GET /api/get-account` | 读资料 | `Authorization: Bearer <token>`；**只返回** `id/name/displayName/avatar/createdTime/lastLoginTime` |
+| `POST /api/update-user` | 改昵称/头像 | 忽略请求体里的 `id/name/pwd/tokenVer/status/note`（客户端改不了自己的身份与状态） |
+| `POST /api/upload-resource` | 上传头像 | multipart；按**文件头魔数**判类型、≤2 MB、服务端生成文件名 |
+
+- **令牌**：HS256 自签 JWT，payload 含 `id` / `name` / `ver` / `exp`，
+  密钥在 `data/jwt_secret.txt`（600 权限，首次启动自动生成，**与管理员密钥分开**）。
+- **密码**：`pbkdf2_sha256$迭代数$盐$哈希`；比对用 `hmac.compare_digest`，
+  失败话术统一为「用户名或密码不正确」（不暴露账号是否存在），登录失败一样计入限速。
+- **旧令牌失效**：改密 / 停用 / 踢下线都会让该账号 `tokenVer +1`，
+  旧令牌即使没过期也会被判 `401`（客户端表现为要求重新登录）。
+- **错误话术**（客户端会直接显示）：`用户名或密码不正确` / `该账号已被停用，请联系客服` /
+  `尝试次数过多，请 10 分钟后再试` / `用户名已被注册` / `请求格式不正确`。
+- **未知的 `/api/*`、`/avatar/*`** 一律 404 JSON；所有响应都带
+  `Access-Control-Allow-Origin: *`，`OPTIONS` 预检返回 204 —— 否则 WebView2 会把它当网络故障。
+
+### 回退到 Casdoor（开关）
+```
+# 1) 打开 /home/admin/ai_server/run.env，删掉 MP_AUTH_MODE=builtin（或改成 casdoor）
+# 2) 重启 AI 服务：./start.sh
+# 3) 重新起 Casdoor：cd /home/admin/casdoor && nohup ./casdoor > casdoor.log 2>&1 &
+```
+代价：自签令牌与 Casdoor 令牌互不认可，**所有客户端需要重新登录一次**。
+Casdoor 的数据库一直原样保留（升级前还额外做过 `.bak`），随时可以回去。
 
 ---
 
 ## 四、收款码（半自动支付）
 
-把收款码图片命名为 `paycode.png` 放到数据目录：
+推荐**按套餐 + 支付方式**各放一张（客户端会显示「微信支付 / 支付宝」切换按钮，
+并自动按用户选的套餐展示对应金额的收款码）：
+
+| 文件（放在 `data/`） | 用途 |
+|---|---|
+| `paycode_day_wechat.png` | 日卡（¥2）微信收款码 |
+| `paycode_day_alipay.png` | 日卡（¥2）支付宝收款码 |
+| `paycode_month_wechat.png` | 月卡（¥8）微信收款码 |
+| `paycode_month_alipay.png` | 月卡（¥8）支付宝收款码 |
+| `paycode.png` | 通用兜底（旧部署仍可用；上面缺哪张就退回它） |
 
 ```bash
-# 例：把微信/支付宝收款码传上去
-scp 收款码.png root@<服务器IP>:/home/admin/ai_server/data/paycode.png
+# 上传（按需来几张都行，客户端会自己显示有哪些）
+scp paycode_month_wechat.png paycode_month_alipay.png \
+    paycode_day_wechat.png  paycode_day_alipay.png \
+    admin@<服务器IP>:/home/admin/ai_server/data/
 ```
 
-客户端「开通会员」弹窗会自动拉取 `http://<服务器IP>:2581/ai/paycode.png` 展示；
-没上传时弹窗会提示「请联系客服获取收款码」。
+- 客户端先请求 `GET /ai/paycodes` 拿到可用清单，再按 `<套餐>/<方式>` 取图：
+  `GET /ai/paycode/month/wechat.png` 这样的地址；
+- 一张都没传时，弹窗会提示「收款码未上传 + 客服邮箱」；
+- 图片建议裁成**只留二维码**的方形图（客户端收款码框是 168×168，
+  图里留白太多会让二维码变小、不好扫）。
 
 ### 用户下单 → 你确认开通 的完整流程
 
@@ -122,7 +238,18 @@ scp 收款码.png root@<服务器IP>:/home/admin/ai_server/data/paycode.png
 
 1. 粘贴管理员密钥 → 点「保存到本浏览器」（密钥只存在你自己浏览器里，不会写进页面）；
 2. 订单列表里点「确认收款并开通」即可，支持勾选「每 15 秒自动刷新」；
-3. 同一页面还能「加天数」和「查用户额度」。
+3. 顶部有运营摘要：**待处理 N 笔 / 今日已开通 N 笔 · ￥X / 累计已开通 N 笔 · ￥X**；
+4. 同一页面还能「加天数」和「查用户额度」；
+5. **「用户与 AI 额度」面板（4.0.3 新增）**：列出所有登录过软件的账号 ——
+   用户名、首次 / 最近登录时间、今日用量（免费 / 会员 / 不限量）、累计调用次数、会员到期；
+   每行可以「重置今日」「清零累计」，或者一键**开通免费不限量**（再点一次即取消）；
+   面板顶部有「账号数 / 今日登录 / 免费账号数 / 今日总调用」摘要，并支持按用户名搜索；
+6. **账号管理（4.1.0 新增，`builtin` 模式下才有按钮）**：同一张表里多出
+   注册时间 / 最后登录(IP) / 状态 / 备注 几列，以及
+   **新建账号**、**重置密码**（弹出一次性临时密码，只显示这一次，转告用户后请其自行修改）、
+   **停用 / 启用**（停用后无法登录、旧令牌立刻失效）、**踢下线**（密码不变、强制重登）、
+   **备注**（只给自己看，客户端看不到）；
+7. 已做手机适配（窄屏下按钮全宽、卡片竖排、表格可横向滑动），随手用手机也能处理订单。
 
 **方式 B（服务器命令行）**
 
@@ -145,6 +272,34 @@ python3 admin_cli.py confirm 20261010XXXX-AB   # 确认收款 → 自动开通�
 python3 admin_cli.py lookup <用户名>     # 查会员到期 + 今日用量
 python3 admin_cli.py grant <用户名> 30   # 手工加 30 天（补偿 / 活动 / 内部账号）
 python3 admin_cli.py key                # 打印当前管理员密钥
+```
+
+### 管理接口（后台页面用的就是它们，也可直接 curl / 接你自己的脚本）
+
+都要求请求头 `X-Admin-Key: <管理员密钥>`（也支持 URL 上带 `?key=`）：
+
+| 接口 | 作用 |
+|---|---|
+| `POST /ai/admin/users` | 用户总览：登录时间 + 会员 + 今日/累计 AI 用量（含 `free` 标记） |
+| `POST /ai/admin/free` | `{"username":"Ethan","on":true}` 开通 / 取消该账号的**免费不限量** |
+| `POST /ai/admin/reset` | `{"username":"Ethan"}` 重置该账号**今日用量**；加 `"total": true` 连累计一起清零；`{"all": true}` 重置全部账号 |
+| `POST /ai/admin/grant` | `{"username":"Ethan","days":30}` 手工加会员天数 |
+| `POST /ai/admin/lookup` | `{"username":"Ethan"}` 查单个账号的会员与额度 |
+| `POST /ai/admin/orders` / `confirm` | 订单列表 / 确认收款并开通 |
+
+示例（你自己的账号要免费用 AI）：
+
+```bash
+KEY=$(python3 admin_cli.py key)
+# 1) 先用这个账号在软件里登录一次（产生登录记录）
+# 2) 开通免费不限量
+curl -s -X POST http://127.0.0.1:2581/ai/admin/free \
+     -H "X-Admin-Key: $KEY" -H "Content-Type: application/json" \
+     -d '{"username":"Ethan","on":true}'
+# 3) 想清零用量
+curl -s -X POST http://127.0.0.1:2581/ai/admin/reset \
+     -H "X-Admin-Key: $KEY" -H "Content-Type: application/json" \
+     -d '{"username":"Ethan"}'
 ```
 
 ---
@@ -170,17 +325,30 @@ python3 admin_cli.py key                # 打印当前管理员密钥
 |---|---|
 | `users.json` | 见过的用户（id / 用户名 / 首末次时间） |
 | `members.json` | 会员到期时间 |
-| `usage.json` | 每人每天的免费/会员用量 |
+| `free.json` | 管理员开通的「免费不限量」账号（4.0.3 新增） |
+| `usage.json` | 每人每天的免费 / 会员 / 不限量用量 |
 | `orders.json` | 订单记录 |
+| `accounts.json` | **账号表**（4.1.0 新增）：用户名 / 显示名 / 头像 / 密码哈希 / 状态 / 备注 / `tokenVer` |
+| `auth_guard.json` | 登录失败计数与锁定状态（4.1.0 新增，可随时删，删掉等于解锁所有人） |
+| `jwt_secret.txt` | 自令牌签名密钥（4.1.0 新增，600 权限；**删掉会让所有人令牌失效**，需重新登录） |
 | `admin_key.txt` | 管理员密钥 |
 | `paycode.png` | 收款码（可选） |
 | `backup/` | **自动备份**（见下） |
 
+> 账号表里的 `id` 是 UUID，**永远不要假设它等于用户名**：
+> `free.json` / `usage.json` / `members.json` 都按这个 id 记录额度，
+> 换用户名不影响额度，换 id 会（4.1.0 上线时特意复用了 Casdoor 时期的 id，所以老额度都还在）。
+
 ### 自动备份（4.0.2 新增）
 
-每次**启动服务**时，会把上面 4 个 json 复制到 `data/backup/`，
+每次**启动服务**时，会把上面 6 个 json（users / members / free / usage / orders / accounts）复制到 `data/backup/`，
 命名为 `members.20261010-093501.json` 这样的时间戳文件，**每个文件只保留最近 7 份**，
 启动日志里会打印「已备份 N 个数据文件」。
+
+**数据文件损坏会自动恢复**：启动时若某个 json 读不出来（磁盘写坏、被手工改错等），
+服务会从 `backup/` 里挑**最新一份能解析的备份**恢复，并把损坏的原文件留档为
+`xxx.json.corrupt`，日志里会写明「数据文件损坏 → 使用备份文件 → 已从备份恢复」。
+（实测：把 `members.json` 写坏后重启，用户会员到期时间原样恢复。）
 
 > 为什么要这个：`members.json` / `orders.json` 丢了就等于用户白付了钱。
 > 想手工再兜一层可以偶尔执行：
@@ -216,8 +384,11 @@ MP_MOCK=1 MP_PORT=2599 MP_DATA_DIR=./data_test MP_ADMIN_KEY=testkey \
 
 | 现象 | 原因 / 处理 |
 |---|---|
-| 客户端提示「登录状态已失效」 | token 过期（30 天）→ 重新登录；或服务端连不上 Casdoor |
+| 客户端提示「登录状态已失效」 | token 过期（7 天）→ 重新登录；或服务重启后 `data/jwt_secret.txt` 丢了；或该账号被改密/停用/踢下线（`tokenVer` 变了） |
 | 客户端提示「无法连接 AI 服务」 | 2581 未启动 / 安全组关闭 → `tail -n 50 ai_server.log` |
+| 客户端提示「无法连接服务器」（登录/注册时） | 2580 没在监听：确认 `run.env` 里有 `MP_AUTH_MODE=builtin`，再看启动日志那两行「账号模式 / 账号服务」 |
+| 登录一直提示「用户名或密码不正确」 | 密码确实错了；或该 IP 触发限速（`auth_guard.json`，删掉即清零）；或账号是 `casdoor` 模式建的、`accounts.json` 里没有 |
 | 所有人都是 402 | 免费次数用完是正常的；要改次数用 `MP_FREE_DAILY` |
+| 想把账号体系退回 Casdoor | 见「二·五」结尾的回退开关（代价：所有人重新登录一次） |
 | 管理命令报「无法连接服务」 | 服务没起来，或 `MP_URL` 端口不对（默认 2581） |
 | 用户说付了钱但没开通 | `python3 admin_cli.py list` 看有没有 `claimed` 订单，然后 `confirm` |
