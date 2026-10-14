@@ -2634,6 +2634,18 @@ body,
   font-size: 12px;
   text-align: center;
 }
+/* 注册页的规则提示：4.1.1 起把用户名/密码要求写在页面上，别再让人提交后才知道 */
+.register-hint {
+  margin-top: 10px;
+  color: var(--c-text-aux);
+  font-size: 12px;
+  line-height: 1.7;
+  text-align: center;
+}
+.register-hint b {
+  color: var(--c-text-sub);
+  font-weight: 600;
+}
 
 /* ============================================================
    登录界面（参考提供样式，配色改为跟随软件主题）

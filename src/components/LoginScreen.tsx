@@ -198,6 +198,13 @@ export default function LoginScreen() {
           </div>
         )}
 
+        {mode === "register" && (
+          <div className="register-hint">
+            用户名 <b>1~32 位</b>，可用<b>中英文、数字、下划线、连字符</b>
+            （首尾不能是 _ 或 -）；密码<b>至少 8 位</b>
+          </div>
+        )}
+
         <button
           className="submit-button"
           disabled={busy}

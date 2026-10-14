@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-轻提词 · AI 中转服务（4.1.0）
+轻提词 · AI 中转服务（4.1.1）
 ============================================================
 在 4.0.0 的「纯转发」版本上补上：鉴权 / 额度 / 会员 / 订单。
 4.1.0 再把第三方账号系统 Casdoor 换成内置账号模块（自建注册/登录/凭证校验），
 使账号与 AI 额度在同一个服务里管理；客户端一行都不用改（兼容 Casdoor 的 5 个接口）。
+4.1.1 修注册：用户名放开中文（2~32 位），并把「用户名/密码不符合要求」写成
+一眼能看懂的整句（此前只收 ASCII，中文昵称会被当场拒掉且看不出原因）。
 
 设计要点
   · 鉴权：客户端必须带 Casdoor access_token（Authorization: Bearer xxx），
@@ -104,7 +106,7 @@ PORT = int(os.environ.get("MP_PORT", "2581"))
 CASDOOR_URL = os.environ.get("MP_CASDOOR_URL", "http://127.0.0.1:2580").rstrip("/")
 
 # ---- 4.1.0 自建账号模块 ----
-VERSION = "4.1.0"
+VERSION = "4.1.1"
 # casdoor：令牌拿去问 Casdoor（4.0.3 的行为，默认，便于随时回滚）
 # builtin：令牌本地校验，并额外监听 MP_AUTH_PORT（客户端写死的 2580）
 AUTH_MODE = (os.environ.get("MP_AUTH_MODE", "casdoor") or "casdoor").strip().lower()
@@ -121,7 +123,10 @@ FAIL_WINDOW_SEC = int(os.environ.get("MP_FAIL_WINDOW_SEC", "900"))   # 15 分钟
 AVATAR_MAX_BYTES = 2 * 1024 * 1024
 AVATAR_EXTS = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
                "webp": "image/webp"}
-USERNAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]{1,30})[A-Za-z0-9]$")
+# 用户名：中英文、数字、下划线、连字符，2~32 位，首尾不能是 _ 或 -
+# 4.1.1 起放开中文（老 Casdoor 时代的用户习惯用中文昵称，只收 ASCII 会当场被拒）
+USERNAME_RE = re.compile(
+    r"^[A-Za-z0-9\u4e00-\u9fa5](?:[A-Za-z0-9_\-\u4e00-\u9fa5]{0,30})[A-Za-z0-9\u4e00-\u9fa5]$")
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
                      r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 AVATAR_FILE_RE = re.compile(r"^[0-9a-fA-F-]{36}\.(png|jpg|jpeg|webp)$")
@@ -592,12 +597,12 @@ class Store(object):
         """新建账号。失败时抛 ValueError，消息可直接给用户看。"""
         name = (name or "").strip()
         if not valid_username(name):
-            raise ValueError("用户名只能包含字母、数字、下划线或连字符，3~32 位，"
-                             "且不能以 _ 或 - 开头结尾")
+            raise ValueError("用户名不符合要求：只能中英文、数字、下划线或连字符，"
+                             "2~32 位，且不能以 _ 或 - 开头结尾")
         if len(password or "") < 8:
-            raise ValueError("密码至少 8 位")
+            raise ValueError("密码不符合要求：至少 8 位")
         if len(password or "") > 128:
-            raise ValueError("密码过长（上限 128 位）")
+            raise ValueError("密码不符合要求：最长 128 位")
         with self.lock:
             existed, _ = self.account_by_name(name)
             if existed:
@@ -633,7 +638,7 @@ class Store(object):
             if not acc:
                 raise ValueError("账号不存在")
             if len(password or "") < 8:
-                raise ValueError("密码至少 8 位")
+                raise ValueError("密码不符合要求：至少 8 位")
             acc["pwd"] = hash_pwd(password)
             if bump:
                 acc["tokenVer"] = int(acc.get("tokenVer", 1)) + 1   # 旧令牌立刻失效
@@ -1349,6 +1354,10 @@ ADMIN_PAGE = r"""<!doctype html>
     <button class="primary" id="ncreate">新建账号</button>
   </div>
   <div class="hint" style="margin-top:6px">
+    用户名规则（和客户端注册页一致）：<b>2~32 位</b>，可用<b>中英文、数字、下划线、连字符</b>，
+    首尾不能是 <code>_</code> 或 <code>-</code>；密码<b>至少 8 位</b>。
+  </div>
+  <div class="hint" style="margin-top:6px">
     这里的「账号」就是软件里登录的云端账号（含注册/最后登录时间、当日与累计 AI 次数）。
     「免费不限量」= 该账号不受每天 3 次免费额度限制（仍保留 2 秒最小调用间隔）。<br>
     账号操作：<b>重置密码</b>会生成一次性临时密码（只显示这一次，请转告用户登录后自行修改）；
@@ -1708,7 +1717,7 @@ ADMIN_PAGE = r"""<!doctype html>
     var name = ($("nname").value || "").trim();
     var pwd = $("npwd").value || "";
     if (!name) { $("out").textContent = "请先填用户名。"; return; }
-    if (pwd.length < 8) { $("out").textContent = "密码至少 8 位。"; return; }
+    if (pwd.length < 8) { $("out").textContent = "密码不符合要求：至少 8 位。"; return; }
     if (!confirm("新建账号「" + name + "」？")) return;
     api("/ai/admin/account/create", { name: name, password: pwd }).then(function (res) {
       if (!res.data.ok) { showErr($("out"), res); return; }
