@@ -75,7 +75,9 @@ versions["Cargo.toml"] = pick("src-tauri/Cargo.toml", /^version\s*=\s*"([^"]+)"/
 versions["setup.iss(MyAppVersion)"] = pick("src-tauri/inno/setup.iss", /MyAppVersion\s+"([^"]+)"/);
 versions["关于页"] = pick("src/components/SettingsDialog.tsx", /轻提词 测试 ([0-9.]+)/);
 versions["欢迎页"] = pick("src/components/WelcomeScreen.tsx", /当前版本：测试 ([0-9.]+)/);
-versions["ai_server(health)"] = pick("server_ai/ai_server.py", /version="([^"]+)"/);
+// ai_server.py 里版本是常量 VERSION = "x.y.z"（/ai/health 上报的就是它），
+// 旧正则 /version="…"/ 匹配的是带引号的字面量，永远取不到值（会静默显示 null）。
+versions["ai_server(health)"] = pick("server_ai/ai_server.py", /^VERSION\s*=\s*"([^"]+)"/m);
 const uniq = Array.from(new Set(Object.values(versions).filter(Boolean)));
 for (const [k, v] of Object.entries(versions)) console.log("         " + k.padEnd(24) + v);
 if (uniq.length === 1) ok("全部一致：" + uniq[0]);
@@ -105,7 +107,7 @@ try {
 }
 
 /* ---------- 4. 线上 AI 服务是否已经是新版 ---------- */
-console.log("[4] AI 服务端版本（看线上是否已部署 4.0.2）");
+console.log("[4] 线上 AI 服务端版本（是否与客户端同版本）");
 let aiUrl = null;
 try {
   const m = read(".env").match(/^\s*VITE_AI_URL\s*=\s*(.*)$/m);
