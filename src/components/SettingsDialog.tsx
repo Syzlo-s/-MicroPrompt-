@@ -1,7 +1,6 @@
 import React from "react";
 import { useStore, THEMES } from "../store";
-import { LOCAL_ADMIN_TOKEN, uploadAvatar, updateProfile } from "../services/auth";
-import { LOCAL_TOKEN_PREFIX, localUpdateAccount } from "../services/localAuth";
+import { uploadAvatar, updateProfile } from "../services/auth";
 import { formatMemberUntil, memberDaysLeft } from "../services/ai";
 import { fileToAvatarDataUrl, MAX_AVATAR_BYTES } from "../utils";
 import defaultAvatar from "../assets/icons/default-avatar.svg";
@@ -237,9 +236,8 @@ export default function SettingsDialog({
   };
 
   // ---- 用户信息 ----
-  const isAdmin = authToken === LOCAL_ADMIN_TOKEN;
-  const isLocal = !!authToken && authToken.startsWith(LOCAL_TOKEN_PREFIX);
-  const isCloud = !!authToken && !isAdmin && !isLocal;
+  // 4.0.3 起只有云端 Casdoor 账号（本机离线账号与内置管理员已移除）
+  const isCloud = !!authToken;
   const [accName, setAccName] = React.useState(username);
   const [accMsg, setAccMsg] = React.useState("");
   const [saving, setSaving] = React.useState(false);
@@ -290,29 +288,6 @@ export default function SettingsDialog({
     const newName = accName.trim();
     if (!newName) {
       setAccMsg("用户名不能为空");
-      return;
-    }
-    if (isAdmin) {
-      setAccMsg("内置管理员账号不可修改");
-      return;
-    }
-    if (isLocal) {
-      const oldUsername = token.slice(LOCAL_TOKEN_PREFIX.length);
-      try {
-        const acc = localUpdateAccount(oldUsername, { username: newName });
-        setAuth(LOCAL_TOKEN_PREFIX + acc.username, {
-          id: acc.id,
-          username: acc.username,
-        });
-        try {
-          localStorage.setItem("microprompt.savedUsername", acc.username);
-        } catch {
-          /* ignore */
-        }
-        setAccMsg("已保存");
-      } catch (err) {
-        setAccMsg(err instanceof Error ? err.message : "保存失败");
-      }
       return;
     }
     // 云端账号（Casdoor）：同步显示名
@@ -371,7 +346,6 @@ export default function SettingsDialog({
         <input
           className="dialog-input"
           value={accName}
-          disabled={isAdmin}
           placeholder="用户名"
           onChange={(e) => setAccName(e.target.value)}
         />
@@ -395,7 +369,7 @@ export default function SettingsDialog({
         </button>
         <button
           className="btn btn-primary"
-          disabled={isAdmin || saving}
+          disabled={saving}
           onClick={handleSaveAccount}
         >
           {saving ? "保存中…" : "保存"}

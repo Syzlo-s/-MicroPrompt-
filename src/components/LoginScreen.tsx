@@ -1,16 +1,6 @@
 import { useState } from "react";
 import { useStore } from "../store";
-import {
-  LOCAL_ADMIN,
-  LOCAL_ADMIN_ENABLED,
-  loginWithPassword,
-  registerWithPassword,
-} from "../services/auth";
-import {
-  localLogin,
-  localRegister,
-  LOCAL_TOKEN_PREFIX,
-} from "../services/localAuth";
+import { loginWithPassword, registerWithPassword } from "../services/auth";
 
 const SAVED_USER_KEY = "microprompt.savedUsername";
 const SAVED_PWD_KEY = "microprompt.savedPassword";
@@ -93,6 +83,7 @@ function EyeIcon({ open }: { open: boolean }) {
 /** 登录 / 注册界面（用户名 + 密码；记住账号密码） */
 export default function LoginScreen() {
   const setAuth = useStore((s) => s.setAuth);
+  const authNotice = useStore((s) => s.authNotice);
 
   const [mode, setMode] = useState<"login" | "register">("login");
   const [username, setUsername] = useState(loadSaved(SAVED_USER_KEY));
@@ -119,32 +110,7 @@ export default function LoginScreen() {
       const u = username.trim();
       if (!u || !password) throw new Error("请输入用户名和密码");
 
-      // 1) 内置管理员（.env 未配置凭据时该入口整体关闭）
-      if (
-        LOCAL_ADMIN_ENABLED &&
-        u === LOCAL_ADMIN.username &&
-        password === LOCAL_ADMIN.password
-      ) {
-        saveCred(u, password);
-        setAuth("local-admin", {
-          id: "local-admin",
-          username: LOCAL_ADMIN.username,
-        });
-        return;
-      }
-
-      // 2) 本机注册的账号（离线可用）
-      const local = localLogin(u, password);
-      if (local) {
-        saveCred(u, password);
-        setAuth(LOCAL_TOKEN_PREFIX + local.username, {
-          id: local.id,
-          username: local.username,
-        });
-        return;
-      }
-
-      // 3) 后端账号（PocketBase 部署后）
+      // 一律走云端 Casdoor 登录（4.0.3 起已移除本机离线账号与内置管理员入口）
       const r = await loginWithPassword(u, password);
       saveCred(u, password);
       setAuth(r.token, r.record);
@@ -154,27 +120,14 @@ export default function LoginScreen() {
     run(async () => {
       const u = username.trim();
       if (!u) throw new Error("请输入用户名");
-      if (password.length < 8) throw new Error("密码至少 8 位");
+      if (password.length < 8) throw new Error("密码不符合要求：至少 8 位");
       if (password !== confirm) throw new Error("两次输入的密码不一致");
 
-      // 1) 优先注册到云端（后端可用时，管理员后台可见）
-      try {
-        await registerWithPassword(u, password);
-        const r = await loginWithPassword(u, password);
-        saveCred(u, password);
-        setAuth(r.token, r.record);
-        return;
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : "";
-        // 2) 仅当连接不上服务器时，回退本机注册（离线可用）
-        if (!/无法连接服务器|网络/.test(msg)) throw e;
-        const acc = localRegister(u, password);
-        saveCred(u, password);
-        setAuth(LOCAL_TOKEN_PREFIX + acc.username, {
-          id: acc.id,
-          username: acc.username,
-        });
-      }
+      // 只注册到云端：连不上服务器就直接报错，绝不再悄悄创建本机账号
+      await registerWithPassword(u, password);
+      const r = await loginWithPassword(u, password);
+      saveCred(u, password);
+      setAuth(r.token, r.record);
     });
 
   return (
@@ -183,6 +136,12 @@ export default function LoginScreen() {
         <h2 className="form-title">
           {mode === "login" ? "欢迎回来" : "创建账号"}
         </h2>
+
+        {authNotice && (
+          <div className="login-error" style={{ color: "#8a6d3b" }}>
+            {authNotice}
+          </div>
+        )}
 
         <div className="input-group">
           <div className="input-wrapper">

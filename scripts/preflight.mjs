@@ -49,13 +49,9 @@ if (!has(".env")) {
     if (!m || !m[1].trim()) bad(key + " 未配置（" + desc + "）");
     else ok(key + " = " + m[1].trim());
   }
-  for (const [key, desc] of [
-    ["VITE_LOCAL_ADMIN_USER", "内置管理员账号"],
-    ["VITE_LOCAL_ADMIN_PASSWORD", "内置管理员密码"],
-  ]) {
-    const m = env.match(new RegExp("^\\s*" + key + "\\s*=\\s*(.*)$", "m"));
-    if (!m || !m[1].trim()) soft(key + " 未配置 —— 内置管理员登录会被禁用（" + desc + "）");
-    else ok(key + " 已配置");
+  // 4.0.3 起已移除「本机离线账号 / 内置管理员」，VITE_LOCAL_ADMIN_* 不再需要
+  if (/\bVITE_LOCAL_ADMIN_(USER|PASSWORD)\s*=\s*\S/.test(env)) {
+    soft("检测到已废弃的 VITE_LOCAL_ADMIN_*（4.0.3 起不再使用，可从 .env 删除）");
   }
   if (/VITE_AI_URL\s*=\s*http:\/\/127\.0\.0\.1/.test(env)) {
     soft("VITE_AI_URL 指向本机地址（127.0.0.1）—— 别把这个包发给用户");

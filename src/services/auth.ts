@@ -34,20 +34,26 @@ export interface AuthResponse {
   record: AuthUser;
 }
 
-/** 本地内置管理员账号（离线可用；凭据配置在 .env，未配置时该登录入口关闭） */
-const LOCAL_ADMIN_USER =
-  (import.meta.env.VITE_LOCAL_ADMIN_USER as string | undefined) || "";
-const LOCAL_ADMIN_PASSWORD =
-  (import.meta.env.VITE_LOCAL_ADMIN_PASSWORD as string | undefined) || "";
-export const LOCAL_ADMIN = {
-  username: LOCAL_ADMIN_USER,
-  password: LOCAL_ADMIN_PASSWORD,
-};
-/** 未配置 .env 时禁用内置管理员登录，避免出现"空用户名/空密码可登录"的默认账号 */
-export const LOCAL_ADMIN_ENABLED = Boolean(
-  LOCAL_ADMIN_USER && LOCAL_ADMIN_PASSWORD,
-);
-export const LOCAL_ADMIN_TOKEN = "local-admin";
+/** 说明：4.0.3 起彻底移除「本机离线账号」与内置管理员入口，
+ *  注册 / 登录一律走云端 Casdoor；AI 额度、会员、用量全部由服务端统计。 */
+
+/** 统一的请求超时（毫秒）：账号服务器不可达时不要一直转圈，直接给明确提示 */
+const AUTH_TIMEOUT_MS = 12000;
+
+async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), AUTH_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new Error("连接账号服务器超时，请检查网络后重试（未创建任何账号）");
+    }
+    throw new Error("无法连接服务器，请检查网络或服务器地址（未创建任何账号）");
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** 解析 JWT payload（Casdoor 的 access_token） */
 function parseJwt(token: string): Record<string, unknown> {
@@ -86,21 +92,17 @@ export async function registerWithPassword(
   username: string,
   password: string,
 ): Promise<AuthUser> {
-  let res: Response;
-  try {
-    res = await fetch(`${CASDOOR_URL}/api/signup`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        application: APP_NAME,
-        organization: ORG_NAME,
-        username,
-        password,
-      }),
-    });
-  } catch {
-    throw new Error("无法连接服务器，请检查网络或服务器地址");
-  }
+  // 注册一律发到云端；连不上就明确报错，不再回退本机账号
+  const res = await fetchWithTimeout(`${CASDOOR_URL}/api/signup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      application: APP_NAME,
+      organization: ORG_NAME,
+      username,
+      password,
+    }),
+  });
   const data = (await res.json().catch(() => ({}))) as {
     status?: string;
     msg?: string;
@@ -126,16 +128,14 @@ export async function loginWithPassword(
     password,
     scope: "read",
   });
-  let res: Response;
-  try {
-    res = await fetch(`${CASDOOR_URL}/api/login/oauth/access_token`, {
+  const res = await fetchWithTimeout(
+    `${CASDOOR_URL}/api/login/oauth/access_token`,
+    {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body.toString(),
-    });
-  } catch {
-    throw new Error("无法连接服务器，请检查网络或服务器地址");
-  }
+    },
+  );
   const data = (await res.json().catch(() => ({}))) as {
     access_token?: string;
     error?: string;
@@ -153,14 +153,9 @@ export async function loginWithPassword(
 
 /** 用已保存的 token 校验登录态（Casdoor /api/get-account） */
 export async function authRefresh(token: string): Promise<AuthResponse> {
-  let res: Response;
-  try {
-    res = await fetch(`${CASDOOR_URL}/api/get-account`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-  } catch {
-    throw new Error("无法连接服务器，请检查网络或服务器地址");
-  }
+  const res = await fetchWithTimeout(`${CASDOOR_URL}/api/get-account`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
   if (!res.ok) throw new Error("登录已过期");
   const data = (await res.json().catch(() => ({}))) as {
     status?: string;

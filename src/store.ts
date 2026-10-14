@@ -256,6 +256,8 @@ interface StoreState {
   authToken: string | null;
   authUser: AuthUser | null;
   authReady: boolean;
+  /** 登录页顶部提示（例如：旧的离线账号已停用，请用云端账号登录） */
+  authNotice: string;
   /** 设置弹窗是否打开 / 是否只显示账号卡片（点击左上角头像） */
   settingsOpen: boolean;
   settingsAccountOnly: boolean;
@@ -307,6 +309,7 @@ interface StoreState {
 
   init: () => Promise<void>;
   setAuth: (token: string, user: AuthUser) => void;
+  setAuthNotice: (v: string) => void;
   clearAuth: () => void;
   restoreAuth: () => Promise<void>;
   select: (id: string) => Promise<void>;
@@ -422,6 +425,7 @@ export const useStore = create<StoreState>((set, get) => {
     authToken: loadAuthToken(),
     authUser: loadAuthUser(),
     authReady: false,
+    authNotice: "",
     settingsOpen: false,
     settingsAccountOnly: false,
     dataDir: "",
@@ -488,11 +492,14 @@ export const useStore = create<StoreState>((set, get) => {
       void get().refreshAiQuota();
     },
 
+    setAuthNotice: (v: string) => set({ authNotice: v }),
+
     clearAuth: () => {
       clearAuthStorage();
       set({
         authToken: null,
         authUser: null,
+        authNotice: "",
         aiQuota: null,
         aiQuotaError: "",
         aiQuotaErrorCode: "",
@@ -523,6 +530,20 @@ export const useStore = create<StoreState>((set, get) => {
       const token = loadAuthToken();
       if (!token) {
         set({ authReady: true });
+        return;
+      }
+
+      // 4.0.3 起不再支持「本机离线账号」：遇到旧的 local:* / local-admin 登录态，
+      // 直接清掉并要求用云端账号重新登录（否则 AI 润色必然不可用）。
+      if (isLocalAccount(token)) {
+        expireLogin();
+        set({
+          authToken: null,
+          authUser: null,
+          authReady: true,
+          authNotice:
+            "本机离线账号已停用：请用云端账号登录；没有账号就点下方「立即注册」，注册后即可使用 AI 润色",
+        });
         return;
       }
 
