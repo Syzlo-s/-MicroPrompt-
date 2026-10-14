@@ -701,7 +701,7 @@ export default function SettingsDialog({
                   <span className="set-menu-body">
                     <span className="set-menu-name">
                       {item.name}
-                      {item.key === "ai" && !aiQuota?.member && (
+                      {item.key === "ai" && !aiQuota?.member && !aiQuota?.free && (
                         <span className="set-menu-badge">会员</span>
                       )}
                     </span>
