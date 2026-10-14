@@ -441,12 +441,19 @@ export default function SettingsDialog({
       <div className="ai-member-card">
         <div className={"ai-member-line" + (aiQuotaErrorCode && !aiQuota ? " warn" : "")}>
           {aiQuota
-            ? aiQuota.member
-              ? `会员 · 有效期至 ${formatMemberUntil(aiQuota.memberUntil)}`
-              : `免费版 · 今日剩余 ${aiQuota.remainingToday}/${aiQuota.freeQuota} 次`
+            ? aiQuota.free
+              ? "免费不限量 · 管理员已为你的账号开通"
+              : aiQuota.member
+                ? `会员 · 有效期至 ${formatMemberUntil(aiQuota.memberUntil)}`
+                : `免费版 · 今日剩余 ${aiQuota.remainingToday}/${aiQuota.freeQuota} 次`
             : aiQuotaError || (aiQuotaLoading ? "正在获取额度…" : "尚未获取额度")}
         </div>
-        {aiQuota?.member && (
+        {aiQuota?.free && (
+          <div className="ai-member-sub">
+            今日已用 {aiQuota.unlimitedUsedToday ?? 0} 次 · 不限次数（仅保留 2 秒调用间隔）
+          </div>
+        )}
+        {!aiQuota?.free && aiQuota?.member && (
           <div className="ai-member-sub">
             剩余 {memberDaysLeft(aiQuota.memberUntil)} 天 · 今日已用{" "}
             {aiQuota.memberUsedToday}/{aiQuota.memberCap} 次 · 正常使用不限量
@@ -468,11 +475,11 @@ export default function SettingsDialog({
               disabled={!aiQuota}
               title={aiQuota ? "" : "额度信息不可用时无法下单"}
             >
-              {aiQuota?.member ? "续费 / 升级" : "开通会员"}
+              {aiQuota?.member || aiQuota?.free ? "续费 / 升级" : "开通会员"}
             </button>
           )}
         </div>
-        {!aiQuota?.member && aiQuota && (
+        {!aiQuota?.member && !aiQuota?.free && aiQuota && (
           <div className="set-hint">
             免费版每天 {aiQuota?.freeQuota ?? 3} 次；日卡 ¥2（24 小时）、月卡 ¥8（30 天）
           </div>
@@ -616,7 +623,7 @@ export default function SettingsDialog({
 
   const viewAbout = (
     <div className="set-section set-about">
-      <div className="set-hint">轻提词 测试 4.0.2 · 本地桌面速记 · AI 额度与会员制</div>
+      <div className="set-hint">轻提词 测试 4.1.1 · 本地桌面速记 · AI 额度与会员制</div>
       <div className="set-hint">
         AI 免费版每天 {aiQuota?.freeQuota ?? 3} 次 · 日卡 ¥2（24 小时）/ 月卡 ¥8（30 天）
       </div>

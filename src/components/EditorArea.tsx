@@ -18,7 +18,7 @@ import { useStore } from "../store";
 import { clamp, uid } from "../utils";
 import { analyzeCodeBlock } from "../utils/codeBlockAnalyzer";
 import { handleCodeRefblockCopy } from "../utils/clipboardCodeBlock";
-import { polishText, AiError } from "../services/ai";
+import { polishText, AiError, AI_MAX_CHARS } from "../services/ai";
 import Icon from "./Icon";
 import { ContextMenu } from "./context-menu";
 import { ConfirmDialog, InputDialog } from "./dialogs";
@@ -261,9 +261,11 @@ export default function EditorArea() {
 
   /** 「AI 润色」按钮的悬浮说明：让用户点之前就知道额度情况 */
   const aiQuotaTip = aiQuota
-    ? aiQuota.member
-      ? `AI 润色（会员，今日已用 ${aiQuota.memberUsedToday}/${aiQuota.memberCap} 次）`
-      : `AI 润色（今日剩余 ${aiQuota.remainingToday}/${aiQuota.freeQuota} 次）`
+    ? aiQuota.free
+      ? `AI 润色（免费不限量，今日已用 ${aiQuota.unlimitedUsedToday ?? 0} 次）`
+      : aiQuota.member
+        ? `AI 润色（会员，今日已用 ${aiQuota.memberUsedToday}/${aiQuota.memberCap} 次）`
+        : `AI 润色（今日剩余 ${aiQuota.remainingToday}/${aiQuota.freeQuota} 次）`
     : "AI 润色";
 
   const note = notes.find((n) => n.id === currentId);
@@ -453,6 +455,17 @@ export default function EditorArea() {
       if (!ed) return;
       const text = ed.state.doc.textBetween(from, to, "\n").trim();
       if (!text) return;
+      // 先做长度预检：自动润色按钮默认润色「整篇提示词」，长笔记很容易超过
+      // 服务端单次上限（2 万字符）。本地先拦下并说清怎么办，避免白跑一趟请求。
+      if (text.length > AI_MAX_CHARS) {
+        if (aiHintTimer.current) clearTimeout(aiHintTimer.current);
+        setAiBtn(null);
+        setAiToast(
+          `选中内容 ${text.length} 字，超过单次上限 ${AI_MAX_CHARS} 字：请分段选中后再润色`,
+        );
+        window.setTimeout(() => setAiToast(""), 4200);
+        return;
+      }
       if (aiHintTimer.current) clearTimeout(aiHintTimer.current);
       setAiBtn(null);
       setAiBusy(true);
@@ -517,9 +530,14 @@ export default function EditorArea() {
       } catch (e) {
         const code = e instanceof AiError ? e.code : "error";
         const msg = e instanceof Error ? e.message : "AI 润色失败";
-        setBox("AI 润色失败：" + msg, false);
+        // 失败时把占位方框删掉：方框是"结果容器"，失败原因用顶部提示 + 开通弹窗表达。
+        // 否则「AI 润色失败：今日免费额度已用完…」会被永久写进用户笔记（还会存进 notes.json）。
+        const boxNode = ed.state.doc.nodeAt(pos);
+        if (boxNode && boxNode.type.name === "aiBlock") {
+          ed.view.dispatch(ed.state.tr.delete(pos, pos + boxNode.nodeSize));
+        }
         setAiToast(msg);
-        window.setTimeout(() => setAiToast(""), 3000);
+        window.setTimeout(() => setAiToast(""), 3600);
         // 免费额度用完 → 直接弹出开通会员窗口；
         // 会员达到防滥用上限则不再弹（他已经是会员），只提示联系客服
         if (code === "free_exhausted") {

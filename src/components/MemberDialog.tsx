@@ -2,15 +2,19 @@ import React from "react";
 import { useStore } from "../store";
 import {
   AI_PLANS,
+  AI_URL,
   claimOrder,
   createOrder,
   fetchMyOrder,
   fetchOrder,
+  fetchPayCodes,
   formatMemberUntil,
   memberDaysLeft,
   paycodeUrl,
   type AiOrder,
   type AiPlan,
+  type PayCode,
+  type PayMethod,
 } from "../services/ai";
 
 /** 客服反馈邮箱（与设置页 / 欢迎页保持一致） */
@@ -55,10 +59,47 @@ export default function MemberDialog({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = React.useState(false);
   const [msg, setMsg] = React.useState("");
   const [paycodeOk, setPaycodeOk] = React.useState(true);
+  const [payCodes, setPayCodes] = React.useState<PayCode[]>([]);
+  const [payMethod, setPayMethod] = React.useState<PayMethod>("wechat");
+  const [srcIdx, setSrcIdx] = React.useState(0);
   const [paid, setPaid] = React.useState(false);
   const pollRef = React.useRef<number | null>(null);
 
   const current = AI_PLANS.find((p) => p.key === plan) ?? AI_PLANS[1];
+
+  // 当前订单套餐下可用的收款方式 / 收款码；列表为空时退回通用收款码
+  const planCodes = payCodes.filter((c) => c.plan === (order?.plan ?? ""));
+  const methods = Array.from(new Set(planCodes.map((c) => c.method))) as PayMethod[];
+  const activeMethod: PayMethod = methods.includes(payMethod)
+    ? payMethod
+    : ((methods[0] as PayMethod | undefined) ?? "wechat");
+  const activeCode = planCodes.find((c) => c.method === activeMethod);
+  const qrCandidates = [
+    ...(activeCode ? [`${AI_URL}${activeCode.url}`] : []),
+    paycodeUrl(),
+  ];
+  const qrSrc = qrCandidates[Math.min(srcIdx, qrCandidates.length - 1)];
+
+  React.useEffect(() => {
+    setSrcIdx(0);
+    setPaycodeOk(true);
+  }, [payMethod, order?.plan]);
+
+  // 服务端有哪些收款码（每个套餐可各配微信/支付宝两 张）。
+  // 老服务端没有 /ai/paycodes → 清单为空 → 自动退回通用收款码 paycode.png
+  React.useEffect(() => {
+    let alive = true;
+    void fetchPayCodes(authToken)
+      .then((r) => {
+        if (alive) setPayCodes(r.codes);
+      })
+      .catch(() => {
+        if (alive) setPayCodes([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [authToken]);
 
   const stopPoll = React.useCallback(() => {
     if (pollRef.current !== null) {
@@ -171,9 +212,11 @@ export default function MemberDialog({ onClose }: { onClose: () => void }) {
   };
 
   const statusLine = quota
-    ? quota.member
-      ? `会员 · 有效期至 ${formatMemberUntil(quota.memberUntil)}（剩余 ${memberDaysLeft(quota.memberUntil)} 天）`
-      : `免费版 · 今日剩余 ${quota.remainingToday}/${quota.freeQuota} 次`
+    ? quota.free
+      ? "免费不限量 · 管理员已为你的账号开通，无需购买"
+      : quota.member
+        ? `会员 · 有效期至 ${formatMemberUntil(quota.memberUntil)}（剩余 ${memberDaysLeft(quota.memberUntil)} 天）`
+        : `免费版 · 今日剩余 ${quota.remainingToday}/${quota.freeQuota} 次`
     : aiQuotaError || "正在获取额度…";
 
   return (
@@ -278,12 +321,39 @@ export default function MemberDialog({ onClose }: { onClose: () => void }) {
                 {order.status === "pending" ? (
                   <>
                     <div className="member-pay">
+                      {methods.length > 1 && (
+                        <div className="member-pay-methods">
+                          {methods.map((m) => (
+                            <button
+                              key={m}
+                              type="button"
+                              className={
+                                "member-pay-method" +
+                                (m === activeMethod ? " active" : "")
+                              }
+                              onClick={() => setPayMethod(m)}
+                            >
+                              {m === "wechat" ? "微信支付" : "支付宝"}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      <div className="member-pay-tip">
+                        付款时请备注订单号后 4 位：
+                        <b>{order.id.slice(-4)}</b>
+                      </div>
                       {paycodeOk ? (
                         <img
                           className="member-paycode"
-                          src={paycodeUrl()}
+                          src={qrSrc}
                           alt="收款码"
-                          onError={() => setPaycodeOk(false)}
+                          onError={() => {
+                            if (srcIdx < qrCandidates.length - 1) {
+                              setSrcIdx(srcIdx + 1);
+                            } else {
+                              setPaycodeOk(false);
+                            }
+                          }}
                         />
                       ) : (
                         <div className="member-paycode-fallback">
@@ -295,10 +365,6 @@ export default function MemberDialog({ onClose }: { onClose: () => void }) {
                           </div>
                         </div>
                       )}
-                      <div className="member-pay-tip">
-                        付款时请备注订单号后 4 位：
-                        <b>{order.id.slice(-4)}</b>
-                      </div>
                     </div>
                     <div className="member-actions">
                       <button

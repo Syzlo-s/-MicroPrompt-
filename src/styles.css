@@ -4704,6 +4704,30 @@ button:focus-visible,
   align-items: center;
   gap: 6px;
 }
+/* 收款方式切换（微信 / 支付宝）：某个套餐同时配了两张收款码时显示 */
+.member-pay-methods {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+.member-pay-method {
+  padding: 4px 14px;
+  font-size: 12px;
+  border-radius: 999px;
+  border: 1px solid var(--c-border);
+  background: var(--c-white);
+  color: var(--c-text-sub);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.member-pay-method:hover {
+  border-color: var(--c-text-aux);
+}
+.member-pay-method.active {
+  background: #2b2f36;
+  border-color: #2b2f36;
+  color: #fff;
+}
 .member-paycode {
   width: 168px;
   height: 168px;

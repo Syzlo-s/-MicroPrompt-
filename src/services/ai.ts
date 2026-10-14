@@ -22,6 +22,11 @@ export const AI_URL =
 /** 免费额度提示文案用的默认值（真实值以服务端返回为准） */
 export const FREE_DAILY_QUOTA = 3;
 
+/** 单次润色的字符上限（与服务端 ai_server.py 的 20000 保持一致）。
+ *  「自动润色」默认润色整篇提示词，长笔记很容易超限 —— 客户端先预检，
+ *  本地拦下并提示分段，避免白跑一次请求（服务端拒绝时不会扣额度）。 */
+export const AI_MAX_CHARS = 20000;
+
 /** 会员套餐（与欢迎页 / 服务端 PLANS 保持一致） */
 export interface AiPlan {
   key: "day" | "month";
@@ -42,6 +47,10 @@ export interface AiQuota {
   /** 会员到期时间（秒级时间戳，0=未开通） */
   memberUntil: number;
   plan: "free" | "unlimited";
+  /** 管理员在后台给这个账号开通的「免费不限量」（不受每天免费额度限制） */
+  free?: boolean;
+  /** 「免费不限量」账号今日已用次数 */
+  unlimitedUsedToday?: number;
   freeQuota: number;
   freeUsedToday: number;
   memberCap: number;
@@ -279,9 +288,32 @@ export async function fetchMyOrder(
   return data.order ?? null;
 }
 
-/** 收款码图片地址（管理员把 paycode.png 放到服务端 data 目录） */
-export function paycodeUrl(): string {
+/** 收款方式（4.0.2 起：每个套餐可以各配一张微信 / 支付宝收款码） */
+export type PayMethod = "wechat" | "alipay";
+
+export interface PayCode {
+  plan: string;
+  method: string;
+  /** 服务端返回的相对地址，如 /ai/paycode/month/wechat.png */
+  url: string;
+}
+
+/** 收款码图片地址：给了套餐 + 方式就用对应的那张；否则回退到通用图（兼容老部署） */
+export function paycodeUrl(plan?: string, method?: string): string {
+  if (plan && method) return `${AI_URL}/ai/paycode/${plan}/${method}.png`;
   return `${AI_URL}/ai/paycode.png`;
+}
+
+/** 拉取服务端上有哪些收款码可用。
+ *  老服务端没有 /ai/paycodes，会抛错 —— 调用方要兜底成"只用通用收款码"。 */
+export async function fetchPayCodes(
+  token?: string | null,
+): Promise<{ codes: PayCode[]; legacyUrl: string }> {
+  const data = (await request("/ai/paycodes", { token })) as {
+    codes?: PayCode[];
+    legacyUrl?: string;
+  };
+  return { codes: data.codes ?? [], legacyUrl: data.legacyUrl ?? "" };
 }
 
 /** 秒级时间戳 → "2026-11-09 08:47" */
