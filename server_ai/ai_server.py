@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-轻提词 · AI 中转服务（4.1.1）
+轻提词 · AI 中转服务（4.1.2）
 ============================================================
 在 4.0.0 的「纯转发」版本上补上：鉴权 / 额度 / 会员 / 订单。
 4.1.0 再把第三方账号系统 Casdoor 换成内置账号模块（自建注册/登录/凭证校验），
@@ -9,6 +9,14 @@
 4.1.1 修注册：用户名放开中文（1~32 位），并把「用户名/密码不符合要求」写成
 一眼能看懂的整句（此前只收 ASCII，中文昵称会被当场拒掉且看不出原因；
 同日再补齐单字用户名——用户实际填的是「吴」这种单姓，被 2 位下限挡掉了）。
+4.1.2 重构管理后台（/admin，桌面优先的 INS 风控制台）并补上运维能力：
+  · 实时：每次数据落盘 +1 修订号，页面每 2 秒只拉一个几百字节的快照，
+    变了才重画（/ai/admin/poll）；概览页有 KPI、额度分布、近 14 天趋势（/ai/admin/overview）
+  · 每日统计 stats.json（调用/登录/下单/开通/收入/新增账号），趋势图与月收入靠它
+  · 操作审计 admin_log.json：后台每次写操作留痕（谁、何时、对谁、做了什么）
+  · 安全视图：登录失败锁定记录 + 管理员密钥错误（后者只进内存，防磁盘放大）
+  · 收款码在线上传/替换/删除（不用再 scp 图片到服务器）
+界面源文件是 server_ai/admin_ui.html，用 sync_admin_page.py 注入下面的 ADMIN_PAGE。
 
 设计要点
   · 鉴权：客户端必须带 Casdoor access_token（Authorization: Bearer xxx），
@@ -44,6 +52,15 @@
   POST /api/upload-resource             头像上传（multipart，≤2MB，按魔数校验）
   GET  /avatar/<uid>.<ext>              头像文件
   POST /ai/admin/account/list|create|resetpwd|status|kick|note   后台账号管理
+
+  【4.1.2 后台实时与运维】全部要求 X-Admin-Key
+  POST /ai/admin/poll           {rev?}      -> 轻量实时快照（修订号/账号/待处理/今日调用与收入）
+  POST /ai/admin/overview                  -> KPI + 近 14 天趋势 + 热门账号（概览页）
+  POST /ai/admin/logs                      -> 操作审计（最近 500 条）
+  POST /ai/admin/security                  -> 登录锁定记录 + 管理员密钥错误
+  POST /ai/admin/paycode/list              -> 4 个收款码槽位（日卡/月卡 × 微信/支付宝）
+  POST /ai/admin/paycode/upload {plan, method, data(dataURL)}   -> 上传/替换收款码
+  POST /ai/admin/paycode/delete {plan, method}                  -> 删除收款码
 
 运行
   MP_ADMIN_KEY=你的管理密钥 python3 ai_server.py
@@ -107,7 +124,7 @@ PORT = int(os.environ.get("MP_PORT", "2581"))
 CASDOOR_URL = os.environ.get("MP_CASDOOR_URL", "http://127.0.0.1:2580").rstrip("/")
 
 # ---- 4.1.0 自建账号模块 ----
-VERSION = "4.1.1"
+VERSION = "4.1.2"
 # casdoor：令牌拿去问 Casdoor（4.0.3 的行为，默认，便于随时回滚）
 # builtin：令牌本地校验，并额外监听 MP_AUTH_PORT（客户端写死的 2580）
 AUTH_MODE = (os.environ.get("MP_AUTH_MODE", "casdoor") or "casdoor").strip().lower()
@@ -172,6 +189,17 @@ def now_ts():
 
 def today_str():
     return datetime.now(CST).strftime("%Y-%m-%d")
+
+
+def is_today(ts):
+    """时间戳（unix 秒）是否落在北京时间「今天」。"""
+    try:
+        ts = float(ts or 0)
+    except Exception:
+        return False
+    if ts <= 0:
+        return False
+    return datetime.fromtimestamp(ts, CST).strftime("%Y-%m-%d") == today_str()
 
 
 def log(*args):
@@ -359,6 +387,25 @@ def parse_multipart(body, content_type, max_bytes=AVATAR_MAX_BYTES + 65536):
     return out
 
 
+def _decode_data_url(text):
+    """解析浏览器 FileReader 给的 data:image/png;base64,xxxx（也接受裸 base64）。"""
+    if not text:
+        return b""
+    if isinstance(text, bytes):
+        text = text.decode("ascii", "replace")
+    if text.startswith("data:"):
+        pos = text.find(",")
+        if pos < 0:
+            return b""
+        head, text = text[:pos], text[pos + 1:]
+        if "base64" not in head:
+            return b""
+    try:
+        return base64.b64decode(text)
+    except Exception:
+        return b""
+
+
 def sniff_image_ext(data):
     """按文件头魔数判断图片类型（不看客户端给的文件名，防伪装）。"""
     if data[:8] == b"\x89PNG\r\n\x1a\n":
@@ -379,6 +426,7 @@ class Store(object):
         self.lock = threading.RLock()
         self.token_cache = {}          # token -> (user_id, username, expire_at)
         self.last_call = {}            # user_id -> 上次调用时间
+        self.rev = 0                   # 数据修订号：任何真实数据落盘就 +1（后台据此判断要不要重画）
         if not os.path.isdir(self.dir):
             os.makedirs(self.dir)
         self.users = self._load("users.json", {})       # id -> {id,name,first,last}
@@ -390,6 +438,14 @@ class Store(object):
         self.guard = self._load("auth_guard.json", {})   # 4.1.0：登录失败计数（丢了只是限速被重置）
         self.admin_key = self._load_admin_key()
         self.jwt_secret = self._load_jwt_secret()
+        # ---- 4.1.2 后台：每日统计 / 审计日志 ----
+        self.stats = self._load("stats.json", {})        # {days: {"YYYY-MM-DD": {calls,logins,...}}}
+        self._stats_flushed = 0.0
+        doc = self._load("admin_log.json", {})
+        items = doc.get("items") if isinstance(doc, dict) else None
+        self.admin_log = items if isinstance(items, list) else []
+        self.admin_fails = []          # 管理员密钥错误记录：只放内存，避免被人刷成磁盘炸弹
+        self.rev = 1
 
     # ---- 文件读写 ----
     def _path(self, name):
@@ -449,12 +505,24 @@ class Store(object):
                 continue
         return None
 
+    # 这几个文件是「派生视图」：它们变化时必定伴随某个真实数据文件一起变化，
+    # 让它们也 +rev 只会让后台每 3 秒白重画一次，所以排除在外。
+    _REV_EXEMPT = ("stats.json", "admin_log.json", "auth_guard.json")
+
     def _save(self, name, obj):
         path = self._path(name)
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(obj, f, ensure_ascii=False, indent=1)
         os.replace(tmp, path)
+        if name not in self._REV_EXEMPT:
+            self.rev = int(getattr(self, "rev", 0)) + 1
+
+    def bump_rev(self):
+        """数据文件之外的变化（例如上传收款码图片）也要让后台知道。"""
+        with self.lock:
+            self.rev = int(self.rev) + 1
+            return self.rev
 
     def _load_admin_key(self):
         path = self._path("admin_key.txt")
@@ -515,7 +583,7 @@ class Store(object):
         stamp = datetime.now(CST).strftime("%Y%m%d-%H%M%S")
         made = 0
         for name in ("users.json", "members.json", "free.json", "usage.json", "orders.json",
-                     "accounts.json"):
+                     "accounts.json", "stats.json", "admin_log.json"):
             src = self._path(name)
             if not os.path.isfile(src):
                 continue
@@ -525,7 +593,8 @@ class Store(object):
             except Exception:
                 continue
         # 只保留最近 keep 份（按文件名排序即时间排序）
-        for base in ("users", "members", "free", "usage", "orders", "accounts"):
+        for base in ("users", "members", "free", "usage", "orders", "accounts",
+                     "stats", "admin_log"):
             try:
                 files = sorted([f for f in os.listdir(bdir) if f.startswith(base + ".")])
             except Exception:
@@ -632,6 +701,7 @@ class Store(object):
             }
             self.accounts[uid] = acc
             self.accounts_save()
+            self._stats_bump("newAccounts", 1, force=True)
             return acc
 
     def account_set_password(self, uid, password, bump=True):
@@ -709,6 +779,7 @@ class Store(object):
             acc["lastIP"] = ip or ""
             self.accounts[uid] = acc
             self.accounts_save()
+            self._stats_bump("logins", 1)
             return acc
 
     @staticmethod
@@ -941,6 +1012,7 @@ class Store(object):
             u["total"] = int(u.get("total", 0)) + 1
             self.usage[user_id] = u
             self._save("usage.json", self.usage)
+            self._stats_bump("calls", 1)
             return self.quota_view(user_id)
 
     def refund(self, user_id):
@@ -956,6 +1028,7 @@ class Store(object):
             u["total"] = max(0, int(u.get("total", 0)) - 1)
             self.usage[user_id] = u
             self._save("usage.json", self.usage)
+            self._stats_bump("calls", -1)
             return self.quota_view(user_id)
 
     def rate_limited(self, user_id):
@@ -1049,6 +1122,207 @@ class Store(object):
                       reverse=True)
             return rows
 
+    # ================= 4.1.2 后台：实时快照 / 每日统计 / 审计日志 =================
+
+    def _stats_bump(self, key, n=1, force=False):
+        """按天累计运营统计（概览页的趋势图靠它）。
+        默认最多每 3 秒写一次盘：一次 AI 调用已经写了 usage.json，
+        再为统计多写一次盘不值得；订单/收入/新账号这类低频但要紧的事件走 force。"""
+        with self.lock:
+            days = self.stats.setdefault("days", {})
+            day = today_str()
+            row = days.get(day)
+            if not isinstance(row, dict):
+                row = {}
+            row[key] = row.get(key, 0) + n
+            days[day] = row
+            self.stats["updated"] = now_ts()
+            if len(days) > 200:                      # 只留最近 200 天，别让文件无限长
+                for old in sorted(days.keys())[:-200]:
+                    days.pop(old, None)
+            if force or (now_ts() - float(self._stats_flushed or 0)) >= 3:
+                self._stats_flushed = now_ts()
+                self._save("stats.json", self.stats)
+
+    def stats_series(self, days=14):
+        """最近 N 天（含今天，从旧到新）；今天的数字用实时用量覆盖统计文件。"""
+        with self.lock:
+            hist = self.stats.get("days") or {}
+            today = today_str()
+            out = []
+            today_row = {
+                "calls": 0,
+                "logins": 0,
+                "orders": 0,
+                "paidOrders": 0,
+                "revenue": 0.0,
+                "newAccounts": 0,
+            }
+            for uid in set(self.usage.keys()) | set(self.users.keys()):
+                u = self._usage_of(uid)
+                today_row["calls"] += (int(u.get("free", 0)) + int(u.get("member", 0))
+                                       + int(u.get("unlimited", 0)))
+            for acc in self.accounts.values():
+                if is_today(acc.get("lastLogin")):
+                    today_row["logins"] += 1
+            for o in self.orders.values():
+                if is_today(o.get("created")):
+                    today_row["orders"] += 1
+                if is_today(o.get("paidAt")):
+                    today_row["paidOrders"] += 1
+                    today_row["revenue"] += float(o.get("amount") or 0)
+            for acc in self.accounts.values():
+                if is_today(acc.get("created")):
+                    today_row["newAccounts"] += 1
+            base = datetime.now(CST).date()
+            for i in range(days - 1, -1, -1):
+                d = (base - timedelta(days=i)).strftime("%Y-%m-%d")
+                if d == today:
+                    row = today_row
+                else:
+                    row = hist.get(d) or {}
+                out.append({
+                    "day": d,
+                    "calls": int(row.get("calls", 0)),
+                    "logins": int(row.get("logins", 0)),
+                    "orders": int(row.get("orders", 0)),
+                    "paidOrders": int(row.get("paidOrders", 0)),
+                    "revenue": round(float(row.get("revenue", 0) or 0), 2),
+                    "newAccounts": int(row.get("newAccounts", 0)),
+                })
+            return out
+
+    def admin_kpi(self):
+        """概览页要的所有聚合数字。"""
+        with self.lock:
+            rows = self.list_users()
+            orders = list(self.orders.values())
+            paid = [o for o in orders if o.get("status") == "paid"]
+            pending = [o for o in orders if o.get("status") in ("pending", "claimed")]
+            today = today_str()
+            hist = (self.stats.get("days") or {}).get(today) or {}
+            return {
+                "accounts": len(self.accounts),
+                "disabled": len([r for r in rows if r.get("status") == "disabled"]),
+                "members": len([r for r in rows if r.get("member")]),
+                "free": len([r for r in rows if r.get("free")]),
+                "freeOnly": len([r for r in rows if not r.get("member") and not r.get("free")
+                                 and r.get("status") != "disabled"]),
+                "activeToday": len([r for r in rows if is_today(r.get("lastLogin") or r.get("last"))]),
+                "newToday": len([r for r in rows if is_today(r.get("created"))]),
+                "callsToday": sum(int(r.get("freeUsedToday", 0)) + int(r.get("memberUsedToday", 0))
+                                  + int(r.get("unlimitedUsedToday", 0)) for r in rows),
+                "callsTotal": sum(int(r.get("totalCalls", 0)) for r in rows),
+                "pendingOrders": len(pending),
+                "paidOrders": len(paid),
+                "revenueToday": round(sum(float(o.get("amount") or 0) for o in paid
+                                          if is_today(o.get("paidAt"))), 2),
+                "revenueTotal": round(sum(float(o.get("amount") or 0) for o in paid), 2),
+                "revenueMonth": round(sum(float(o.get("amount") or 0) for o in paid
+                                          if datetime.fromtimestamp(
+                                              float(o.get("paidAt") or 0), CST).strftime("%Y-%m")
+                                          == datetime.now(CST).strftime("%Y-%m")), 2),
+                "loginsToday": int(hist.get("logins", 0)),
+                "rev": int(self.rev),
+                "day": today,
+            }
+
+    def admin_top_users(self, limit=8):
+        rows = [r for r in self.list_users() if int(r.get("totalCalls", 0)) > 0]
+        rows.sort(key=lambda r: int(r.get("totalCalls", 0)), reverse=True)
+        return [{"username": r.get("username") or "(未命名)",
+                 "userId": r.get("userId"),
+                 "totalCalls": int(r.get("totalCalls", 0)),
+                 "callsToday": int(r.get("freeUsedToday", 0)) + int(r.get("memberUsedToday", 0))
+                               + int(r.get("unlimitedUsedToday", 0)),
+                 "member": bool(r.get("member")),
+                 "free": bool(r.get("free")),
+                 "status": r.get("status") or ""} for r in rows[:limit]]
+
+    def admin_poll(self):
+        """轻量实时快照：后台每 2 秒拉一次，只回几百字节。"""
+        with self.lock:
+            calls = 0
+            for uid in set(self.usage.keys()) | set(self.users.keys()):
+                u = self._usage_of(uid)
+                calls += (int(u.get("free", 0)) + int(u.get("member", 0))
+                          + int(u.get("unlimited", 0)))
+            pending = 0
+            revenue_today = 0.0
+            for o in self.orders.values():
+                if o.get("status") in ("pending", "claimed"):
+                    pending += 1
+                if o.get("status") == "paid" and is_today(o.get("paidAt")):
+                    revenue_today += float(o.get("amount") or 0)
+            locked = 0
+            for slot in ("name", "ip"):
+                for rec in (self.guard.get(slot) or {}).values():
+                    if float(rec.get("until") or 0) > now_ts():
+                        locked += 1
+            active = 0
+            for acc in self.accounts.values():
+                if is_today(acc.get("lastLogin")):
+                    active += 1
+            return {
+                "rev": int(self.rev),
+                "ts": now_ts(),
+                "day": today_str(),
+                "accounts": len(self.accounts),
+                "activeToday": active,
+                "pendingOrders": pending,
+                "callsToday": calls,
+                "revenueToday": round(revenue_today, 2),
+                "locked": locked,
+            }
+
+    def audit(self, action, target="", detail="", ip="", ok=True):
+        """管理员操作留痕（新的在前，只留最近 500 条）。"""
+        with self.lock:
+            self.admin_log.insert(0, {
+                "t": now_ts(),
+                "action": action,
+                "target": target,
+                "detail": detail,
+                "ip": ip or "",
+                "ok": bool(ok),
+            })
+            del self.admin_log[500:]
+            self._save("admin_log.json", {"items": self.admin_log, "updated": now_ts()})
+
+    def admin_fail(self, ip):
+        """管理员密钥校验失败：只进内存，避免被人拿错误密钥刷成磁盘炸弹。"""
+        with self.lock:
+            self.admin_fails.insert(0, {"t": now_ts(), "ip": ip or ""})
+            del self.admin_fails[50:]
+
+    def admin_security(self):
+        with self.lock:
+            now = now_ts()
+            out = {"name": [], "ip": []}
+            for slot in ("name", "ip"):
+                for key, rec in (self.guard.get(slot) or {}).items():
+                    until = float(rec.get("until") or 0)
+                    out[slot].append({
+                        "key": key,
+                        "fails": int(rec.get("fails", 0)),
+                        "strikes": int(rec.get("strikes", 0)),
+                        "until": int(until),
+                        "locked": until > now,
+                        "waitSec": int(max(0, until - now)),
+                        "lastLock": int(rec.get("lastLock") or 0),
+                    })
+                out[slot].sort(key=lambda r: (-int(r["locked"]), -float(r["until"])))
+            return {
+                "guard": out,
+                "adminFails": list(self.admin_fails),
+                "policy": {
+                    "maxFail": LOGIN_MAX_FAIL,
+                    "lockSec": LOGIN_LOCK_SEC,
+                    "ipMaxFail": IP_MAX_FAIL,
+                    "windowSec": FAIL_WINDOW_SEC,
+                },
+            }
+
     # ---- 订单 ----
     def create_order(self, user_id, username, plan_key):
         plan = PLANS[plan_key]
@@ -1093,6 +1367,7 @@ class Store(object):
             }
             self.orders[order_id] = order
             self._save("orders.json", self.orders)
+            self._stats_bump("orders", 1, force=True)
             return order
 
     def get_order(self, order_id):
@@ -1125,6 +1400,8 @@ class Store(object):
             o["memberUntil"] = until
             self.orders[order_id] = o
             self._save("orders.json", self.orders)
+            self._stats_bump("paidOrders", 1, force=True)
+            self._stats_bump("revenue", float(o.get("amount") or 0), force=True)
             return o, None
 
     def list_orders(self, status=None):
@@ -1229,177 +1506,740 @@ def resolve_user(store, token):
 # 每次请求通过 X-Admin-Key 发给本服务校验。
 
 ADMIN_PAGE = r"""<!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>轻提词 · AI 服务后台</title>
+<!--
+  轻提词管理后台（4.1.2 重构：INS 风 / 桌面优先 / 2 秒实时）
+  ------------------------------------------------------------------
+  · 这个文件是「源文件」，由 sync_admin_page.py 注入 ai_server.py 的 ADMIN_PAGE 常量，
+    服务端运行时**不读盘**（单文件部署，不依赖相对路径），改完必须跑一次：
+        python3 sync_admin_page.py          # 注入
+        python3 sync_admin_page.py --check  # 只检查有没有不同步（回归测试用）
+  · 纯离线：不引用任何 CDN / 外部字体 / 图表库，图表是手写 SVG。
+  · 密钥只存在使用者自己的浏览器 localStorage，每次请求走 X-Admin-Key 头。
+  · 为了回归测试（tests/admin_panel_smoke.mjs）能点得动，保留了这些钩子：
+      id: key / save / clear / out / users / nname / npwd / ncreate / uresetall
+      data-*: data-confirm / data-reset / data-zero / data-free / data-name /
+              data-pwd / data-kick / data-status / data-note
+-->
 <style>
-  * { box-sizing: border-box; }
-  body { margin: 0; padding: 16px; background: #f5f6f8; color: #1f2430;
-         font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
-  header { max-width: 760px; margin: 0 auto 12px; }
-  h1 { font-size: 18px; margin: 0 0 2px; }
-  h2 { font-size: 14px; margin: 0; }
-  .sub, .hint, footer { color: #7a8290; font-size: 12px; }
-  .card { max-width: 760px; margin: 0 auto 12px; background: #fff; border-radius: 12px;
-          padding: 14px 16px; box-shadow: 0 2px 10px rgba(20,30,50,.06); }
-  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .between { justify-content: space-between; }
-  input[type=text], input[type=password], input[type=number] {
-    flex: 1; min-width: 120px; height: 34px; padding: 0 10px; font-size: 13px;
-    border: 1px solid #dfe3ea; border-radius: 8px; background: #fbfcfe; }
-  button { height: 34px; padding: 0 12px; font-size: 13px; cursor: pointer;
-           border: 1px solid #dfe3ea; border-radius: 8px; background: #fff; }
-  button:hover { background: #f2f4f8; }
-  button.primary { background: #2b2f36; border-color: #2b2f36; color: #fff; }
-  button.primary:hover { background: #3a4049; }
-  button:disabled { opacity: .5; cursor: default; }
-  .chk { font-size: 12px; color: #7a8290; display: inline-flex; align-items: center; gap: 4px; }
-  label { font-size: 12px; color: #7a8290; }
-  .list { margin-top: 10px; }
-  .order { border: 1px solid #e8ebf0; border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
-  .order .top { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
-  .oid { font-family: Consolas, monospace; font-size: 12px; color: #4b5563; }
-  .amt { color: #c0392b; font-weight: 600; }
-  .who { font-size: 13px; }
-  .meta { color: #7a8290; font-size: 12px; margin-top: 2px; }
-  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; }
-  .b-pending { background: #eef1f6; color: #5b6472; }
-  .b-claimed { background: #fff3e0; color: #b45309; }
-  .b-paid { background: #e8f6ee; color: #1c7c46; }
-  .b-canceled { background: #f2f2f2; color: #9aa1ab; }
-  .out { background: #f8fafc; border-radius: 8px; padding: 10px; font-size: 12px;
-         white-space: pre-wrap; word-break: break-all; margin: 10px 0 0; min-height: 20px; }
-  .err { color: #c0392b; }
-  .summary { display: flex; gap: 14px; flex-wrap: wrap; margin: 4px 0 10px;
-             padding: 8px 10px; background: #f7f9fc; border-radius: 8px;
-             font-size: 12px; color: #5b6472; }
-  .summary b { color: #1f2430; }
-  .summary b.hot { color: #b45309; }
-  .tblwrap { margin-top: 10px; overflow-x: auto; }
-  table.tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
-  table.tbl th, table.tbl td { padding: 6px 8px; border-bottom: 1px solid #eef1f6; text-align: left;
-                               white-space: nowrap; vertical-align: top; }
-  table.tbl th { color: #7a8290; font-weight: 500; }
-  table.tbl tr:last-child td { border-bottom: 0; }
-  table.tbl td.ops { white-space: normal; }
-  table.tbl td.ops button { height: 26px; padding: 0 8px; font-size: 12px; margin: 0 4px 4px 0; }
-  .badge.b-free { background: #e8f0fe; color: #1a56db; }
-  .badge.b-member { background: #e8f6ee; color: #1c7c46; }
-  .badge.b-off { background: #fdecec; color: #b42318; }
-  @media (max-width: 480px) {
-    body { padding: 10px; }
-    .card { padding: 12px; }
-    .summary { gap: 8px 12px; }
-    .order .top { flex-direction: column; }
-    .order .top > div:last-child { text-align: left !important; }
-    .order button { width: 100%; margin-top: 8px; }
-    .amt { font-size: 15px; }
+  :root {
+    --bg:#fafafa; --bg2:#f2f2f2; --card:#ffffff; --text:#0f1115; --muted:#8e8e93;
+    --line:#dbdbdb; --line-soft:#efefef; --shadow:0 1px 2px rgba(16,24,40,.04), 0 8px 24px rgba(16,24,40,.05);
+    --accent:#dc2743; --ok:#1c7c46; --warn:#b45309; --danger:#b42318;
+    --grad:linear-gradient(45deg,#f09433,#e6683c 25%,#dc2743 50%,#cc2366 75%,#bc1888);
+    --tint-blue:#eaf2ff; --tint-green:#e8f6ee; --tint-amber:#fff4e5; --tint-red:#fdecec; --tint-violet:#f4ebff;
+    --radius:16px; --radius-sm:10px;
   }
-  footer { max-width: 760px; margin: 4px auto 20px; }
+  html[data-theme="dark"] {
+    --bg:#000000; --bg2:#121212; --card:#121212; --text:#f5f5f5; --muted:#a8a8a8;
+    --line:#2a2a2a; --line-soft:#1f1f1f; --shadow:0 1px 2px rgba(0,0,0,.5), 0 10px 30px rgba(0,0,0,.45);
+    --tint-blue:#152238; --tint-green:#12291d; --tint-amber:#2b2110; --tint-red:#2c1516; --tint-violet:#221a33;
+  }
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body {
+    margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+         "Microsoft YaHei", Inter, Roboto, sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  button, input, select, textarea { font:inherit; color:inherit; }
+  a { color:var(--accent); }
+  code { background:var(--bg2); padding:1px 5px; border-radius:6px; font-size:12px; }
+  .muted { color:var(--muted); }
+  .mono { font-family:ui-monospace, Consolas, "SF Mono", Menlo, monospace; font-size:12px; }
+  .sr { position:absolute; left:-9999px; top:0; width:1px; height:1px; overflow:hidden; }
+
+  /* ---------------- 骨架 ---------------- */
+  .app { display:flex; min-height:100vh; }
+  .side {
+    width:236px; flex:0 0 236px; background:var(--card); border-right:1px solid var(--line-soft);
+    padding:18px 12px; display:flex; flex-direction:column; gap:14px; position:sticky; top:0; height:100vh;
+  }
+  .brand { display:flex; align-items:center; gap:10px; padding:4px 8px 10px; }
+  .brand .logo {
+    width:34px; height:34px; border-radius:11px; background:var(--grad); flex:0 0 34px;
+    display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; font-size:15px;
+  }
+  .brand b { display:block; font-size:15px; letter-spacing:-.01em; }
+  .brand small { color:var(--muted); font-size:11px; letter-spacing:.02em; }
+  nav { display:flex; flex-direction:column; gap:2px; }
+  .nav-item {
+    display:flex; align-items:center; gap:10px; width:100%; text-align:left;
+    padding:9px 10px; border:0; border-radius:var(--radius-sm); background:transparent;
+    cursor:pointer; color:var(--text); font-size:13.5px; position:relative;
+  }
+  .nav-item:hover { background:var(--bg2); }
+  .nav-item.active { background:var(--bg2); font-weight:600; }
+  .nav-item.active::before {
+    content:""; position:absolute; left:-12px; top:8px; bottom:8px; width:3px; border-radius:0 3px 3px 0;
+    background:var(--grad);
+  }
+  .nav-item .ico { width:18px; text-align:center; font-size:14px; opacity:.85; }
+  .nav-item .grow { flex:1; }
+  .pill {
+    display:inline-flex; align-items:center; justify-content:center; min-width:20px; height:19px;
+    padding:0 6px; border-radius:999px; font-size:11px; background:var(--bg2); color:var(--muted);
+  }
+  .pill.hot { background:var(--tint-amber); color:var(--warn); font-weight:600; }
+  .pill.live { background:var(--tint-green); color:var(--ok); }
+  .side-foot { margin-top:auto; display:flex; flex-direction:column; gap:8px; padding:0 6px 4px; }
+  .side-foot .row2 { display:flex; align-items:center; gap:8px; }
+  .dot { width:8px; height:8px; border-radius:50%; background:#c7c7cc; flex:0 0 8px; }
+  .dot.on { background:#30d158; box-shadow:0 0 0 4px rgba(48,209,88,.16); animation:pulse 2s infinite; }
+  .dot.warn { background:#ff9f0a; box-shadow:0 0 0 4px rgba(255,159,10,.16); }
+  @keyframes pulse { 50% { opacity:.45; } }
+
+  main { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .topbar {
+    position:sticky; top:0; z-index:20; background:var(--bg);
+    background:color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter:saturate(160%) blur(12px);
+    border-bottom:1px solid var(--line-soft); padding:14px 26px;
+    display:flex; align-items:center; gap:14px;
+  }
+  .topbar h1 { font-size:19px; margin:0; letter-spacing:-.02em; }
+  .topbar .sub { color:var(--muted); font-size:12px; }
+  .topbar-right { margin-left:auto; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .content { padding:22px 26px 60px; max-width:1320px; width:100%; }
+  .page { display:none; }
+  .page.active { display:block; animation:fade .18s ease; }
+  @keyframes fade { from { opacity:0; transform:translateY(4px); } }
+
+  /* ---------------- 控件 ---------------- */
+  .btn {
+    height:34px; padding:0 13px; border-radius:var(--radius-sm); border:1px solid var(--line);
+    background:var(--card); cursor:pointer; font-size:13px; display:inline-flex; align-items:center;
+    gap:6px; white-space:nowrap; transition:background .15s, border-color .15s, transform .06s;
+  }
+  .btn:hover { background:var(--bg2); }
+  .btn:active { transform:scale(.985); }
+  .btn:disabled { opacity:.5; cursor:not-allowed; }
+  .btn.primary { background:var(--grad); border:0; color:#fff; font-weight:600; }
+  .btn.primary:hover { filter:brightness(1.06); background:var(--grad); }
+  .btn.dark { background:#111; border-color:#111; color:#fff; }
+  html[data-theme="dark"] .btn.dark { background:#f5f5f5; border-color:#f5f5f5; color:#111; }
+  .btn.danger { color:var(--danger); border-color:var(--line);
+                border-color:color-mix(in srgb, var(--danger) 35%, var(--line)); }
+  .btn.danger:hover { background:var(--tint-red); }
+  .btn.sm { height:27px; padding:0 9px; font-size:12px; border-radius:8px; }
+  .btn.icon { width:34px; padding:0; justify-content:center; }
+  input[type=text], input[type=password], input[type=number], select, textarea {
+    height:34px; padding:0 11px; border:1px solid var(--line); border-radius:var(--radius-sm);
+    background:var(--card); outline:none; min-width:0;
+  }
+  textarea { height:auto; padding:9px 11px; resize:vertical; }
+  input:focus, select:focus, textarea:focus {
+    border-color:var(--accent); box-shadow:0 0 0 3px rgba(220,39,67,.16);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+  }
+  input[type=checkbox] { width:15px; height:15px; accent-color:var(--accent); cursor:pointer; }
+  label.lbl { font-size:12px; color:var(--muted); display:block; margin-bottom:5px; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; }
+  .chip {
+    height:30px; padding:0 12px; border-radius:999px; border:1px solid var(--line);
+    background:var(--card); cursor:pointer; font-size:12.5px; color:var(--muted);
+  }
+  .chip:hover { background:var(--bg2); }
+  .chip.on { background:var(--text); color:var(--card); border-color:var(--text); font-weight:600; }
+
+  /* ---------------- 卡片 ---------------- */
+  .card {
+    background:var(--card); border:1px solid var(--line-soft); border-radius:var(--radius);
+    box-shadow:var(--shadow); padding:18px; margin-bottom:16px;
+  }
+  .card-hd { display:flex; align-items:center; gap:10px; margin-bottom:14px; }
+  .card-hd h2 { font-size:14.5px; margin:0; letter-spacing:-.01em; }
+  .card-hd .right { margin-left:auto; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .grid { display:grid; gap:16px; }
+  .grid.k4 { grid-template-columns:repeat(4, minmax(0,1fr)); }
+  .grid.k3 { grid-template-columns:repeat(3, minmax(0,1fr)); }
+  .grid.k2 { grid-template-columns:repeat(2, minmax(0,1fr)); }
+  .grid.side { grid-template-columns:minmax(0,1.55fr) minmax(0,1fr); }
+  @media (max-width:1180px) { .grid.k4 { grid-template-columns:repeat(2,minmax(0,1fr)); } .grid.side { grid-template-columns:1fr; } }
+  @media (max-width:820px) {
+    .app { flex-direction:column; }
+    .side { width:auto; flex:none; height:auto; position:static; border-right:0; border-bottom:1px solid var(--line-soft); }
+    nav { flex-direction:row; overflow-x:auto; }
+    .nav-item.active::before { display:none; }
+    .side-foot { flex-direction:row; align-items:center; }
+    .grid.k3, .grid.k2 { grid-template-columns:1fr; }
+    .content, .topbar { padding-left:14px; padding-right:14px; }
+  }
+
+  /* KPI */
+  .kpi { display:flex; flex-direction:column; gap:6px; }
+  .kpi .k-top { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px; }
+  .kpi .k-val { font-size:27px; font-weight:650; letter-spacing:-.03em; line-height:1.15; }
+  .kpi .k-sub { font-size:12px; color:var(--muted); display:flex; gap:8px; flex-wrap:wrap; }
+  .kpi .k-ico {
+    width:26px; height:26px; border-radius:9px; display:flex; align-items:center; justify-content:center;
+    font-size:13px; background:var(--bg2);
+  }
+  .k-ico.blue { background:var(--tint-blue); } .k-ico.green { background:var(--tint-green); }
+  .k-ico.amber { background:var(--tint-amber); } .k-ico.violet { background:var(--tint-violet); }
+  .k-ico.red { background:var(--tint-red); }
+  .trend-up { color:var(--ok); } .trend-down { color:var(--danger); }
+
+  /* 表格 */
+  .tblwrap { overflow-x:auto; margin:0 -4px; }
+  table.tbl { width:100%; border-collapse:collapse; font-size:12.5px; }
+  table.tbl th, table.tbl td {
+    padding:9px 10px; text-align:left; border-bottom:1px solid var(--line-soft); vertical-align:middle;
+  }
+  table.tbl th {
+    color:var(--muted); font-weight:500; font-size:11px; letter-spacing:.04em; text-transform:uppercase;
+    white-space:nowrap; position:sticky; top:0; background:var(--card);
+  }
+  table.tbl tbody tr:hover { background:var(--bg2); }
+  table.tbl tbody tr.sel { background:var(--bg2); background:color-mix(in srgb, var(--accent) 7%, transparent); }
+  table.tbl td.ops { white-space:nowrap; }
+  table.tbl td.ops .btn { margin-right:5px; }
+  table.tbl td.wrap { white-space:normal; max-width:200px; }
+  .who { display:flex; align-items:center; gap:9px; }
+  .avatar {
+    width:32px; height:32px; flex:0 0 32px; border-radius:50%; padding:2px; background:var(--grad);
+    display:flex; align-items:center; justify-content:center;
+  }
+  .avatar > span {
+    width:100%; height:100%; border-radius:50%; background:var(--card); display:flex;
+    align-items:center; justify-content:center; font-size:12px; font-weight:600;
+  }
+  .avatar.plain { background:var(--line); }
+  .avatar.lg { width:56px; height:56px; flex-basis:56px; }
+  .avatar.lg > span { font-size:20px; }
+  .badge { display:inline-block; padding:2px 9px; border-radius:999px; font-size:11px; white-space:nowrap; }
+  .b-pending { background:var(--bg2); color:var(--muted); }
+  .b-claimed { background:var(--tint-amber); color:var(--warn); }
+  .b-paid { background:var(--tint-green); color:var(--ok); }
+  .b-canceled { background:var(--bg2); color:var(--muted); opacity:.75; }
+  .b-free { background:var(--tint-blue); color:#1a56db; }
+  .b-member { background:var(--tint-green); color:var(--ok); }
+  .b-off { background:var(--tint-red); color:var(--danger); }
+  .b-none { background:var(--bg2); color:var(--muted); }
+  .summary {
+    display:flex; gap:18px; flex-wrap:wrap; padding:11px 13px; border-radius:var(--radius-sm);
+    background:var(--bg2); font-size:12.5px; color:var(--muted); margin-bottom:12px;
+  }
+  .summary b { color:var(--text); font-weight:650; }
+  .summary b.hot { color:var(--warn); }
+  .bar { height:7px; border-radius:999px; background:var(--bg2); overflow:hidden; }
+  .bar > i { display:block; height:100%; border-radius:999px; background:var(--grad); }
+  .bar.blue > i { background:#3b82f6; } .bar.green > i { background:#22a06b; }
+  .bar.amber > i { background:#f59e0b; } .bar.gray > i { background:#9ca3af; }
+
+  /* 订单 */
+  .orders { display:flex; flex-direction:column; gap:9px; }
+  .order {
+    border:1px solid var(--line-soft); border-radius:var(--radius-sm); padding:12px 14px;
+    display:flex; gap:12px; align-items:center; background:var(--card);
+  }
+  .order:hover { border-color:var(--line); }
+  .order .amt { font-size:17px; font-weight:650; letter-spacing:-.02em; }
+  .order .meta { color:var(--muted); font-size:12px; }
+  .oid { font-family:ui-monospace, Consolas, monospace; font-size:11.5px; color:var(--muted); }
+  .copy { cursor:pointer; border:0; background:transparent; color:var(--muted); font-size:11px; padding:2px 4px; }
+  .copy:hover { color:var(--accent); }
+
+  /* 收款码 / 空态 */
+  .pc-grid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:16px; }
+  .pc { border:1px dashed var(--line); border-radius:var(--radius-sm); padding:14px; text-align:center; }
+  .pc.has { border-style:solid; border-color:var(--line-soft); }
+  .pc img { width:100%; max-width:210px; aspect-ratio:1/1; object-fit:contain; border-radius:8px; background:var(--bg2); }
+  .pc .ph { width:100%; max-width:210px; aspect-ratio:1/1; margin:0 auto; border-radius:8px; background:var(--bg2);
+            display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:12px; }
+  .empty { text-align:center; color:var(--muted); padding:26px 10px; font-size:13px; }
+
+  /* 抽屉 / 弹窗 / 提示 */
+  .drawer-mask, .modal-mask {
+    position:fixed; inset:0; background:rgba(0,0,0,.32); backdrop-filter:blur(2px);
+    z-index:60; opacity:0; pointer-events:none; transition:opacity .18s;
+  }
+  .drawer-mask.on, .modal-mask.on { opacity:1; pointer-events:auto; }
+  .drawer {
+    position:fixed; top:0; right:0; height:100vh; width:440px; max-width:92vw; background:var(--card);
+    border-left:1px solid var(--line-soft); z-index:61; transform:translateX(102%);
+    transition:transform .22s cubic-bezier(.32,.72,0,1); display:flex; flex-direction:column;
+  }
+  .drawer.on { transform:none; }
+  .drawer-hd { padding:16px 18px; border-bottom:1px solid var(--line-soft); display:flex; align-items:center; gap:12px; }
+  .drawer-bd { padding:16px 18px 40px; overflow:auto; flex:1; }
+  .drawer-ft { padding:12px 18px; border-top:1px solid var(--line-soft); display:flex; gap:8px; flex-wrap:wrap; }
+  .kv { display:grid; grid-template-columns:96px 1fr; gap:7px 10px; font-size:12.5px; }
+  .kv dt { color:var(--muted); }
+  .kv dd { margin:0; word-break:break-all; }
+  .sec-title { font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin:18px 0 8px; }
+  .modal {
+    position:fixed; z-index:62; left:50%; top:14vh; transform:translateX(-50%) scale(.98);
+    width:430px; max-width:92vw; background:var(--card); border-radius:var(--radius);
+    border:1px solid var(--line-soft); box-shadow:var(--shadow); padding:20px;
+    opacity:0; pointer-events:none; transition:opacity .16s, transform .16s;
+  }
+  .modal.on { opacity:1; pointer-events:auto; transform:translateX(-50%) scale(1); }
+  .modal h3 { margin:0 0 8px; font-size:16px; letter-spacing:-.01em; }
+  .modal p { margin:0 0 14px; color:var(--muted); font-size:13px; white-space:pre-wrap; }
+  .modal-ft { display:flex; gap:8px; justify-content:flex-end; margin-top:16px; }
+  .toasts { position:fixed; right:18px; bottom:18px; z-index:70; display:flex; flex-direction:column; gap:8px; align-items:flex-end; }
+  .toast {
+    background:#111; color:#fff; padding:10px 14px; border-radius:12px; font-size:12.5px; max-width:340px;
+    box-shadow:0 10px 30px rgba(0,0,0,.28); animation:fade .18s ease; white-space:pre-wrap;
+  }
+  html[data-theme="dark"] .toast { background:#f5f5f5; color:#111; }
+  .toast.ok { border-left:3px solid #30d158; }
+  .toast.err { border-left:3px solid #ff453a; }
+  .toast.info { border-left:3px solid #0a84ff; }
+  .hint { color:var(--muted); font-size:12px; line-height:1.7; }
+  .err { color:var(--danger); }
+  .pager { display:flex; align-items:center; gap:8px; justify-content:flex-end; margin-top:12px; font-size:12.5px; color:var(--muted); }
+  .chart-wrap { width:100%; overflow:hidden; }
+  svg.chart { width:100%; height:190px; display:block; }
+  .legend { display:flex; gap:14px; flex-wrap:wrap; font-size:11.5px; color:var(--muted); margin-top:6px; }
+  .legend i { display:inline-block; width:9px; height:9px; border-radius:3px; margin-right:5px; }
+  .feed { display:flex; flex-direction:column; }
+  .feed-item { display:flex; gap:10px; padding:9px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px; }
+  .feed-item:last-child { border-bottom:0; }
+  .feed-item .t { color:var(--muted); font-size:11.5px; white-space:nowrap; }
+  .toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
+  .toolbar .grow { flex:1; min-width:160px; }
+  .selbar {
+    display:none; align-items:center; gap:8px; flex-wrap:wrap; padding:9px 12px; margin-bottom:12px;
+    border-radius:var(--radius-sm); background:var(--tint-violet); font-size:12.5px;
+  }
+  .selbar.on { display:flex; }
+  .kv-inline { display:flex; gap:12px; flex-wrap:wrap; font-size:12.5px; color:var(--muted); }
+  .kv-inline b { color:var(--text); }
+  /* 窄屏（手机应急确认收款用；后台主要还是在电脑上开） */
+  @media (max-width: 480px) {
+    body { font-size:13px; }
+    .content { padding:14px 10px 50px; }
+    .topbar { padding:10px; }
+    .topbar h1 { font-size:17px; }
+    .card { padding:14px; border-radius:14px; }
+    .kpi .k-val { font-size:22px; }
+    .order { flex-wrap:wrap; }
+    .order > div:last-child { text-align:left !important; width:100%; }
+    .order .btn { width:100%; }
+    .toolbar > * { width:100%; }
+    .toolbar .chips { width:100%; }
+    .drawer { width:100%; }
+    .modal { top:8vh; }
+    .toasts { left:12px; right:12px; bottom:12px; }
+    .toast { max-width:none; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <h1>轻提词 · AI 服务后台</h1>
-  <div class="sub">确认收款开通会员 / 手工加天数 / 账号与 AI 额度管理</div>
-</header>
-
-<section class="card">
-  <label>管理员密钥</label>
-  <div class="row" style="margin-top:6px">
-    <input id="key" type="password" placeholder="启动服务时设置的 MP_ADMIN_KEY">
-    <button class="primary" id="save">保存到本浏览器</button>
-    <button id="clear">清除</button>
-  </div>
-  <div class="hint" style="margin-top:6px">密钥只保存在你自己的浏览器里，请求时通过 X-Admin-Key 发给本服务校验。</div>
-</section>
-
-<section class="card">
-  <div class="row between">
-    <h2>订单</h2>
-    <div class="row">
-      <label class="chk"><input type="checkbox" id="auto"> 每 15 秒自动刷新</label>
-      <button id="refresh">刷新</button>
+<div class="app">
+  <!-- ======================= 左侧导航 ======================= -->
+  <aside class="side">
+    <div class="brand">
+      <div class="logo">轻</div>
+      <div><b>轻提词</b><small>AI 服务后台</small></div>
     </div>
-  </div>
-  <div class="list" id="orders"><div class="hint">点「刷新」加载订单。</div></div>
-</section>
-
-<section class="card">
-  <h2>手工操作</h2>
-  <div class="row" style="margin-top:8px">
-    <input id="uname" type="text" placeholder="用户名（软件里登录的账号）">
-    <input id="days" type="number" value="30" min="1" style="max-width:90px">
-    <button id="grant">加天数</button>
-    <button id="lookup">查用户</button>
-  </div>
-  <pre class="out" id="out"></pre>
-</section>
-
-<section class="card">
-  <div class="row between">
-    <h2>用户与 AI 额度</h2>
-    <div class="row">
-      <input id="uq" type="text" placeholder="搜索用户名" style="max-width:150px">
-      <button id="urefresh">刷新</button>
+    <nav id="nav">
+      <button class="nav-item active" data-tab="dash"><span class="ico">◔</span><span class="grow">概览</span></button>
+      <button class="nav-item" data-tab="users"><span class="ico">☺</span><span class="grow">用户与额度</span><span class="pill" id="navUsers">0</span></button>
+      <button class="nav-item" data-tab="orders"><span class="ico">▤</span><span class="grow">订单</span><span class="pill" id="navOrders">0</span></button>
+      <button class="nav-item" data-tab="pay"><span class="ico">▣</span><span class="grow">收款码</span></button>
+      <button class="nav-item" data-tab="logs"><span class="ico">≡</span><span class="grow">日志与安全</span></button>
+      <button class="nav-item" data-tab="settings"><span class="ico">⚙</span><span class="grow">设置</span></button>
+    </nav>
+    <div class="side-foot">
+      <div class="row2">
+        <span class="dot" id="liveDot"></span>
+        <span class="muted" style="font-size:11.5px">实时 <span id="liveText">未连接</span></span>
+      </div>
+      <div class="row2">
+        <button class="btn sm" id="themeBtn">暗色</button>
+        <span class="muted mono" id="verText">v-</span>
+      </div>
     </div>
-  </div>
-  <div class="row" style="margin-top:8px">
-    <label class="chk"><input type="checkbox" id="uauto"> 每 15 秒自动刷新</label>
-    <button id="uresetall">全部重置「今日用量」</button>
-  </div>
-  <div class="row" style="margin-top:8px">
-    <input id="nname" type="text" placeholder="新建账号的用户名" style="max-width:180px">
-    <input id="npwd" type="text" placeholder="初始密码（≥8 位）" style="max-width:180px">
-    <button class="primary" id="ncreate">新建账号</button>
-  </div>
-  <div class="hint" style="margin-top:6px">
-    用户名规则（和客户端注册页一致）：<b>1~32 位</b>，可用<b>中英文、数字、下划线、连字符</b>，
-    首尾不能是 <code>_</code> 或 <code>-</code>；密码<b>至少 8 位</b>。
-  </div>
-  <div class="hint" style="margin-top:6px">
-    这里的「账号」就是软件里登录的云端账号（含注册/最后登录时间、当日与累计 AI 次数）。
-    「免费不限量」= 该账号不受每天 3 次免费额度限制（仍保留 2 秒最小调用间隔）。<br>
-    账号操作：<b>重置密码</b>会生成一次性临时密码（只显示这一次，请转告用户登录后自行修改）；
-    <b>停用</b>会让该账号立即下线且无法登录；<b>踢下线</b>只让已登录的旧令牌立刻失效。
-    后台<b>不会</b>显示任何密码原文——系统只保存单向哈希。
-  </div>
-  <div class="tblwrap" id="users"><div class="hint">点「刷新」加载用户。</div></div>
-</section>
+  </aside>
 
-<footer>
-  收款码：把收款图传到服务器 data/paycode.png，客户端会自动展示；
-  命令行方式同样可用：python3 admin_cli.py list / confirm / grant。
-</footer>
+  <!-- ======================= 主区 ======================= -->
+  <main>
+    <div class="topbar">
+      <div>
+        <h1 id="pageTitle">概览</h1>
+        <div class="sub" id="pageSub">轻提词 AI 服务实时看板</div>
+      </div>
+      <div class="topbar-right">
+        <span class="muted" style="font-size:11.5px" id="syncText">等待密钥</span>
+        <button class="btn icon" id="refresh" title="立即刷新">↻</button>
+        <button class="btn" id="keyBtn">管理员密钥</button>
+      </div>
+    </div>
+
+    <div class="content">
+      <!-- ---------------- 概览 ---------------- -->
+      <section class="page active" id="page-dash">
+        <div class="grid k4" id="kpiRow"></div>
+        <div class="grid side">
+          <div class="card">
+            <div class="card-hd">
+              <h2>近 14 天 AI 调用</h2>
+              <div class="right"><span class="muted" style="font-size:11.5px" id="chartHint"></span></div>
+            </div>
+            <div class="chart-wrap" id="chart"></div>
+            <div class="legend">
+              <span><i style="background:var(--grad)"></i>调用次数</span>
+              <span><i style="background:#22a06b"></i>开通会员（笔）</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-hd"><h2>额度分布</h2></div>
+            <div id="dist"></div>
+          </div>
+        </div>
+        <div class="grid k2">
+          <div class="card">
+            <div class="card-hd"><h2>调用最多的账号</h2><div class="right muted" style="font-size:11.5px">按累计次数</div></div>
+            <div id="topUsers"></div>
+          </div>
+          <div class="card">
+            <div class="card-hd">
+              <h2>最近操作</h2>
+              <div class="right"><button class="btn sm" data-goto="logs">全部日志</button></div>
+            </div>
+            <div id="recentLogs"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------------- 用户 ---------------- -->
+      <section class="page" id="page-users">
+        <div class="card">
+          <div class="card-hd">
+            <h2>用户与 AI 额度</h2>
+            <div class="right">
+              <button class="btn sm" id="uExport">导出 CSV</button>
+              <button class="btn sm danger" id="uresetall">全部重置「今日用量」</button>
+            </div>
+          </div>
+          <div class="toolbar">
+            <input class="grow" id="uq" type="text" placeholder="搜索用户名 / 显示名 / 备注 / IP">
+            <div class="chips" id="uFilters">
+              <button class="chip on" data-uf="all">全部</button>
+              <button class="chip" data-uf="member">会员</button>
+              <button class="chip" data-uf="free">免费不限量</button>
+              <button class="chip" data-uf="active">今日活跃</button>
+              <button class="chip" data-uf="disabled">已停用</button>
+            </div>
+            <select id="uSort" title="排序">
+              <option value="last">按最后登录</option>
+              <option value="created">按注册时间</option>
+              <option value="calls">按累计调用</option>
+              <option value="today">按今日调用</option>
+              <option value="name">按用户名</option>
+            </select>
+          </div>
+          <div class="toolbar">
+            <input id="nname" type="text" placeholder="新建账号的用户名" style="width:190px">
+            <input id="npwd" type="text" placeholder="初始密码（≥8 位）" style="width:190px">
+            <button class="btn primary" id="ncreate">新建账号</button>
+            <span class="hint">用户名 1~32 位，可用中英文 / 数字 / <code>_</code> / <code>-</code>，首尾不能是 <code>_</code> <code>-</code>；密码至少 8 位</span>
+          </div>
+          <div class="selbar" id="selbar">
+            <b>已选 <span id="selCount">0</span> 个</b>
+            <button class="btn sm" data-batch="reset">重置今日用量</button>
+            <button class="btn sm" data-batch="zero">清零累计</button>
+            <button class="btn sm" data-batch="kick">踢下线</button>
+            <button class="btn sm" data-batch="disable">停用</button>
+            <button class="btn sm" data-batch="enable">启用</button>
+            <button class="btn sm" data-batch="clear">取消选择</button>
+          </div>
+          <div class="tblwrap" id="users"><div class="empty">正在加载…</div></div>
+          <div class="pager" id="uPager"></div>
+        </div>
+      </section>
+
+      <!-- ---------------- 订单 ---------------- -->
+      <section class="page" id="page-orders">
+        <div class="card">
+          <div class="card-hd">
+            <h2>订单</h2>
+            <div class="right">
+              <button class="btn sm" id="oExport">导出 CSV</button>
+              <button class="btn sm" id="oRefresh">刷新</button>
+            </div>
+          </div>
+          <div class="toolbar">
+            <input class="grow" id="oq" type="text" placeholder="搜索订单号 / 用户名">
+            <div class="chips" id="oFilters">
+              <button class="chip on" data-of="all">全部</button>
+              <button class="chip" data-of="todo">待处理</button>
+              <button class="chip" data-of="paid">已开通</button>
+              <button class="chip" data-of="canceled">已作废</button>
+            </div>
+          </div>
+          <div class="toolbar">
+            <input id="uname" type="text" placeholder="用户名（软件里登录的账号）" style="width:200px">
+            <input id="days" type="number" value="30" min="1" style="width:90px">
+            <button class="btn" id="grant">手工加天数</button>
+            <button class="btn" id="lookup">查用户额度</button>
+            <span class="hint">用于客户线下付款、补时长等手工场景</span>
+          </div>
+          <div class="orders" id="orderList"><div class="empty">正在加载…</div></div>
+        </div>
+      </section>
+
+      <!-- ---------------- 收款码 ---------------- -->
+      <section class="page" id="page-pay">
+        <div class="card">
+          <div class="card-hd">
+            <h2>收款码</h2>
+            <div class="right"><span class="hint">客户端「开通会员」弹窗里展示，改完立即生效</span></div>
+          </div>
+          <div id="pcWrap"><div class="empty">正在加载…</div></div>
+          <div class="hint" style="margin-top:14px">
+            支持 PNG / JPG / WebP，单张上限 4 MB。上传后客户端按套餐与支付方式自动切换；
+            老部署里那张 <code>data/paycode.png</code> 仍然兼容（作为兜底显示）。
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------------- 日志与安全 ---------------- -->
+      <section class="page" id="page-logs">
+        <div class="card">
+          <div class="card-hd">
+            <h2>操作日志</h2>
+            <div class="right">
+              <span class="hint" id="logHint">最近 500 条</span>
+              <button class="btn sm" id="logRefresh">刷新</button>
+            </div>
+          </div>
+          <div id="logList"><div class="empty">正在加载…</div></div>
+        </div>
+        <div class="grid k2">
+          <div class="card">
+            <div class="card-hd"><h2>登录锁定记录</h2><div class="right hint">按用户名 / 来源 IP</div></div>
+            <div id="guardList"><div class="empty">正在加载…</div></div>
+          </div>
+          <div class="card">
+            <div class="card-hd"><h2>后台密钥错误</h2><div class="right hint">只记在内存</div></div>
+            <div id="failList"><div class="empty">正在加载…</div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------------- 设置 ---------------- -->
+      <section class="page" id="page-settings">
+        <div class="grid k2">
+          <div class="card">
+            <div class="card-hd"><h2>管理员密钥</h2></div>
+            <div class="hint" style="margin-bottom:10px">
+              密钥只存在你自己的浏览器里，每个请求通过 <code>X-Admin-Key</code> 头发给服务端校验；
+              服务端用常量时间比对，日志里只打印后四位。
+            </div>
+            <div class="toolbar" style="margin-bottom:0">
+              <input id="key" type="password" class="grow" placeholder="启动服务时设置的 MP_ADMIN_KEY">
+              <button class="btn primary" id="save">保存到本浏览器</button>
+              <button class="btn" id="clear">清除</button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-hd"><h2>实时刷新</h2></div>
+            <div class="hint" style="margin-bottom:10px">
+              服务端给每次数据落盘都打一个修订号，页面每 2 秒只拉一个几百字节的快照：
+              <b>只有数据真的变了才重画</b>，切到别的浏览器标签页会自动暂停。
+            </div>
+            <div class="kv-inline" id="liveInfo"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-hd"><h2>服务信息</h2></div>
+          <div id="sysInfo"></div>
+        </div>
+        <div class="card">
+          <div class="card-hd"><h2>危险操作</h2></div>
+          <div class="hint" style="margin-bottom:10px">
+            把<b>所有账号</b>的「今日用量」清零（累计调用数保留）。常用于批量补偿或排查额度问题。
+          </div>
+          <button class="btn danger" id="resetAll2">全部重置今日用量</button>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<!-- ======================= 密钥弹窗 ======================= -->
+<div class="modal-mask" id="keyMask"></div>
+<div class="modal" id="keyModal">
+  <h3>填写管理员密钥</h3>
+  <p>服务端启动时会生成/读取 <code>data/admin_key.txt</code>，把里面的内容粘贴到这里（只保存在本浏览器）。</p>
+  <input id="key2" type="password" style="width:100%" placeholder="MP_ADMIN_KEY">
+  <div class="modal-ft">
+    <button class="btn" id="keyCancel">稍后</button>
+    <button class="btn primary" id="keyOk">连接</button>
+  </div>
+</div>
+
+<!-- ======================= 通用确认 / 输入弹窗 ======================= -->
+<div class="modal-mask" id="askMask"></div>
+<div class="modal" id="askModal">
+  <h3 id="askTitle">确认</h3>
+  <p id="askBody"></p>
+  <textarea id="askInput" rows="3" style="width:100%; display:none"></textarea>
+  <div class="modal-ft">
+    <button class="btn" id="askCancel">取消</button>
+    <button class="btn primary" id="askOk">确定</button>
+  </div>
+</div>
+
+<!-- ======================= 用户详情抽屉 ======================= -->
+<div class="drawer-mask" id="drawerMask"></div>
+<div class="drawer" id="drawer">
+  <div class="drawer-hd">
+    <div class="avatar lg" id="dAvatar"><span>?</span></div>
+    <div style="min-width:0">
+      <div style="font-weight:650; font-size:15px" id="dName">-</div>
+      <div class="muted mono" id="dId">-</div>
+    </div>
+    <button class="btn sm" style="margin-left:auto" id="dClose">关闭</button>
+  </div>
+  <div class="drawer-bd" id="dBody"></div>
+  <div class="drawer-ft" id="dFoot"></div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+<pre class="sr" id="out"></pre>
 
 <script>
 (function () {
-  var KEY_STORE = "microprompt.adminKey";
-  var $ = function (id) { return document.getElementById(id); };
+  'use strict';
+  var KEY_STORE = 'microprompt.adminKey';
+  var THEME_STORE = 'microprompt.adminTheme';
+  var POLL_MS = 2000;
+  var FREE_DAILY = 3, MEMBER_CAP = 300;
+  var VERSION = '4.1.2';   // 兜底值：真实版本从 /ai/health 读，避免页面写着写着就过期
 
-  function getKey() {
-    try { return localStorage.getItem(KEY_STORE) || ""; } catch (e) { return ""; }
+  var $ = function (id) { return document.getElementById(id); };
+  var $$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
+
+  var S = {
+    key: '', tab: 'dash', rev: -1, ready: false, paused: false,
+    users: [], orders: [], kpi: null, series: [], topUsers: [], plans: [],
+    logs: [], guard: null, adminFails: [], paycodes: null, live: null, health: null,
+    q: '', filter: 'all', sort: 'last', page: 1, per: 20, sel: {},
+    oq: '', ofilter: 'all', openUser: '', lastPending: -1, loaded: {}, busy: false
+  };
+
+  /* ---------------------------------------------------------- 工具 */
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
-  function setKey(v) {
-    try { localStorage.setItem(KEY_STORE, v); } catch (e) {}
-  }
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
   function fmtTime(ts) {
-    if (!ts) return "-";
-    var d = new Date(ts * 1000);
-    var p = function (n) { return (n < 10 ? "0" : "") + n; };
-    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) +
-           " " + p(d.getHours()) + ":" + p(d.getMinutes());
+    if (!ts) return '-';
+    var d = new Date(Number(ts) * 1000);
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' +
+           pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+  function fmtClock(ts) {
+    if (!ts) return '-';
+    var d = new Date(Number(ts) * 1000);
+    return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+  function fmtDay(day) { return String(day || '').slice(5); }
+  function money(n) { return '￥' + Number(n || 0).toFixed(2); }
+  function isTodayTs(ts) {
+    if (!ts) return false;
+    var d = new Date(Number(ts) * 1000), t = new Date();
+    return d.getFullYear() === t.getFullYear() && d.getMonth() === t.getMonth() &&
+           d.getDate() === t.getDate();
+  }
+  function todayStr() {
+    var d = new Date();
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  }
+  function initial(name) {
+    var s = String(name || '?').trim();
+    return s ? s.slice(0, 1).toUpperCase() : '?';
   }
   function statusText(s) {
-    return ({ pending: "待付款", claimed: "用户已付待确认", paid: "已开通", canceled: "已作废" })[s] || s;
+    return ({ pending: '待付款', claimed: '用户已付待确认', paid: '已开通', canceled: '已作废' })[s] || s;
+  }
+  function usageText(u) {
+    if (u.free) return '不限量 · 今日 ' + u.unlimitedUsedToday + ' 次';
+    if (u.member) return '会员 · 今日 ' + u.memberUsedToday + ' / ' + MEMBER_CAP + ' 次';
+    return '免费 · 今日 ' + u.freeUsedToday + ' / ' + FREE_DAILY + ' 次（余 ' + u.remainingToday + '）';
+  }
+  function stateBadge(u) {
+    var st = String(u.status || '');
+    if (st === 'disabled') return '<span class="badge b-off">已停用</span>';
+    if (!u.account) return '<span class="badge b-none">无账号</span>';
+    if (u.free) return '<span class="badge b-free">免费不限量</span>';
+    if (u.member) return '<span class="badge b-member">会员</span>';
+    return '<span class="badge b-none">免费版</span>';
+  }
+  function copyText(text, okMsg) {
+    // 后台是 http 明文，navigator.clipboard 在非安全上下文里不存在，必须有兜底
+    // 注意：这里只弹吐司、不写 #out —— 否则会把「临时密码：xxx」这种重要提示冲掉
+    var done = function () { toast(okMsg || ('已复制：' + text), 'ok'); };
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(done, function () { fallback(); });
+        return;
+      }
+    } catch (e) { /* 落到兜底 */ }
+    fallback();
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = text; ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed'; ta.style.left = '-9999px';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); done(); }
+      catch (e) { toast('复制失败，请手动选中复制：' + text, 'err'); }
+      document.body.removeChild(ta);
+    }
+  }
+  function download(name, text) {
+    var blob = new Blob(['\ufeff' + text], { type: 'text/csv;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 3000);
+  }
+  function csv(rows) {
+    return rows.map(function (r) {
+      return r.map(function (c) {
+        return '"' + String(c == null ? '' : c).replace(/"/g, '""') + '"';
+      }).join(',');
+    }).join('\r\n');
   }
 
+  /* ---------------------------------------------------------- 输出：吐司 + 隐藏文本槽 */
+  function toast(msg, kind) {
+    var el = document.createElement('div');
+    el.className = 'toast ' + (kind || 'info');
+    el.textContent = msg;
+    $('toasts').appendChild(el);
+    setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 4200);
+  }
+  /** say = 吐司 + 写进隐藏的 #out（回归测试读 #out，比抓吐司稳） */
+  function say(msg, kind) {
+    var box = $('out');
+    if (box) box.textContent = String(msg == null ? '' : msg);
+    if (!msg) return;
+    toast(msg, kind);
+  }
+  function err(res) {
+    if (res && res.status === 403) { say('管理员密钥不正确，请在右上角重新填写', 'err'); needKey(true); return; }
+    var d = (res && res.data) || {};
+    say(d.error || ('请求失败 HTTP ' + ((res && res.status) || '?')), 'err');
+  }
+
+  /* ---------------------------------------------------------- 接口 */
   function api(path, body) {
     return fetch(path, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Admin-Key": getKey() },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Key': S.key },
       body: JSON.stringify(body || {})
     }).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (d) {
@@ -1407,371 +2247,1049 @@ ADMIN_PAGE = r"""<!doctype html>
       });
     });
   }
-
-  function showErr(target, res) {
-    var d = res.data || {};
-    if (res.status === 403) target.innerHTML = '<span class="err">管理员密钥不正确，请在上方重新填写并保存。</span>';
-    else target.innerHTML = '<span class="err">' + (d.error || ("请求失败 HTTP " + res.status)) + "</span>";
+  function need(key, focus) {
+    if (!key) return Promise.resolve({ status: 0, data: { ok: false, error: '请先填写管理员密钥' } });
+    return api(key, focus || {});
   }
 
-  function renderOrders(orders) {
-    var box = $("orders");
-    if (!orders || !orders.length) {
-      box.innerHTML = '<div class="hint">还没有订单。</div>';
-      return;
+  /* ---------------------------------------------------------- 弹窗 */
+  var askCb = null;
+  function ask(opts, cb) {
+    askCb = cb;
+    $('askTitle').textContent = opts.title || '确认';
+    $('askBody').textContent = opts.body || '';
+    var input = $('askInput');
+    if (opts.input) {
+      input.style.display = 'block';
+      input.value = opts.value || '';
+      input.placeholder = opts.placeholder || '';
+      setTimeout(function () { input.focus(); }, 30);
+    } else {
+      input.style.display = 'none';
     }
-    var wait = orders.filter(function (o) { return o.status === "pending" || o.status === "claimed"; });
-    var done = orders.filter(function (o) { return o.status === "paid"; }).slice(0, 20);
-    var rest = orders.filter(function (o) {
-      return o.status !== "pending" && o.status !== "claimed" && o.status !== "paid";
-    }).slice(0, 5);
-    // 运营摘要：待处理 / 今日已开通 / 累计收入（按已开通订单金额求和）
-    var paidAll = orders.filter(function (o) { return o.status === "paid"; });
-    var today = new Date();
-    var isToday = function (ts) {
-      if (!ts) return false;
-      var d = new Date(ts * 1000);
-      return d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth() &&
-             d.getDate() === today.getDate();
-    };
-    var paidToday = paidAll.filter(function (o) { return isToday(o.paidAt); });
-    var sum = function (list) {
-      return list.reduce(function (a, o) { return a + Number(o.amount || 0); }, 0);
-    };
-    var summary = '<div class="summary">' +
-      '<span>待处理 <b class="' + (wait.length ? "hot" : "") + '">' + wait.length + "</b> 笔</span>" +
-      "<span>今日已开通 <b>" + paidToday.length + "</b> 笔 · ￥" + sum(paidToday).toFixed(2) + "</span>" +
-      "<span>累计已开通 <b>" + paidAll.length + "</b> 笔 · ￥" + sum(paidAll).toFixed(2) + "</span>" +
-      "</div>";
-    var html = summary;
-    var block = function (list) {
-      list.forEach(function (o) {
-        var canConfirm = (o.status === "pending" || o.status === "claimed");
-        html += '<div class="order"><div class="top">' +
-          '<div><span class="who">' + (o.name || "-") + "</span> " +
-          '<span class="badge b-' + o.status + '">' + statusText(o.status) + "</span>" +
-          '<div class="meta">' + (o.planName || o.plan) + " / " + (o.days || "-") + " 天 / " +
-          '下单 ' + fmtTime(o.created) + "</div>" +
-          '<div class="oid">' + o.id + "</div></div>" +
-          '<div style="text-align:right"><div class="amt">' + Number(o.amount || 0).toFixed(2) + " 元</div>" +
-          (canConfirm ? '<button class="primary" data-confirm="' + o.id + '" style="margin-top:6px">确认收款并开通</button>' : "") +
-          "</div></div></div>";
+    $('askOk').textContent = opts.ok || '确定';
+    $('askOk').className = 'btn ' + (opts.danger ? 'danger' : 'primary');
+    $('askMask').classList.add('on');
+    $('askModal').classList.add('on');
+  }
+  function askClose() {
+    $('askMask').classList.remove('on');
+    $('askModal').classList.remove('on');
+    askCb = null;
+  }
+  $('askCancel').addEventListener('click', askClose);
+  $('askMask').addEventListener('click', askClose);
+  $('askOk').addEventListener('click', function () {
+    var cb = askCb, val = $('askInput').value;
+    askClose();
+    if (cb) cb(val);
+  });
+
+  function needKey(show) {
+    if (S.key && !show) return;
+    $('key2').value = S.key || '';
+    $('keyMask').classList.add('on');
+    $('keyModal').classList.add('on');
+    setTimeout(function () { $('key2').focus(); }, 40);
+  }
+  function keyClose() {
+    $('keyMask').classList.remove('on');
+    $('keyModal').classList.remove('on');
+  }
+  $('keyCancel').addEventListener('click', keyClose);
+  $('keyMask').addEventListener('click', keyClose);
+  $('keyOk').addEventListener('click', function () {
+    S.key = $('key2').value.trim();
+    try { localStorage.setItem(KEY_STORE, S.key); } catch (e) {}
+    $('key').value = S.key;
+    keyClose();
+    if (!S.key) { say('密钥为空，无法连接', 'err'); return; }
+    S.loaded = {};
+    refresh(true);
+  });
+
+  /* ---------------------------------------------------------- 主题 */
+  function setTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    $('themeBtn').textContent = t === 'dark' ? '亮色' : '暗色';
+    try { localStorage.setItem(THEME_STORE, t); } catch (e) {}
+  }
+  $('themeBtn').addEventListener('click', function () {
+    setTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+  });
+
+  /* ---------------------------------------------------------- 页签 */
+  var TITLES = {
+    dash: ['概览', '轻提词 AI 服务实时看板'],
+    users: ['用户与额度', '账号、会员、免费不限量与每日 AI 用量'],
+    orders: ['订单', '确认收款开通会员 / 手工加天数'],
+    pay: ['收款码', '微信与支付宝收款图在线管理'],
+    logs: ['日志与安全', '后台操作留痕、登录锁定与密钥错误'],
+    settings: ['设置', '密钥、实时刷新与服务信息']
+  };
+  function goto(tab) {
+    S.tab = tab;
+    $$('#nav .nav-item').forEach(function (b) {
+      b.classList.toggle('active', b.getAttribute('data-tab') === tab);
+    });
+    $$('.page').forEach(function (p) { p.classList.toggle('active', p.id === 'page-' + tab); });
+    var t = TITLES[tab] || ['', ''];
+    $('pageTitle').textContent = t[0];
+    $('pageSub').textContent = t[1];
+    loadTab(tab);
+  }
+  $$('#nav .nav-item').forEach(function (b) {
+    b.addEventListener('click', function () { goto(b.getAttribute('data-tab')); });
+  });
+  $$('[data-goto]').forEach(function (b) {
+    b.addEventListener('click', function () { goto(b.getAttribute('data-goto')); });
+  });
+
+  /* ---------------------------------------------------------- 概览 */
+  function kpiCard(ico, cls, label, value, sub) {
+    return '<div class="card kpi">' +
+      '<div class="k-top"><span class="k-ico ' + cls + '">' + ico + '</span>' + label + '</div>' +
+      '<div class="k-val">' + value + '</div>' +
+      '<div class="k-sub">' + (sub || '') + '</div></div>';
+  }
+  function areaChart(series, key, height) {
+    var W = 720, H = height || 190, padL = 6, padR = 6, padT = 16, padB = 22;
+    var n = series.length;
+    if (!n) return '<div class="empty">暂无数据</div>';
+    var max = 0;
+    series.forEach(function (d) { max = Math.max(max, Number(d[key] || 0)); });
+    if (max <= 0) max = 1;
+    var stepX = (W - padL - padR) / Math.max(1, n - 1);
+    var y = function (v) { return padT + (H - padT - padB) * (1 - Number(v || 0) / max); };
+    var pts = series.map(function (d, i) { return [padL + i * stepX, y(d[key])]; });
+    var line = pts.map(function (p) { return p[0].toFixed(1) + ',' + p[1].toFixed(1); }).join(' ');
+    var area = line + ' ' + (padL + (n - 1) * stepX).toFixed(1) + ',' + (H - padB) + ' ' +
+               padL + ',' + (H - padB);
+    var bars = '';
+    var bw = Math.max(3, Math.min(14, stepX * 0.34));
+    series.forEach(function (d, i) {
+      var v = Number(d.paidOrders || 0);
+      if (!v) return;
+      var h = Math.max(2, (H - padT - padB) * 0.34 * (v / Math.max(1, maxPaid(series))));
+      bars += '<rect x="' + (padL + i * stepX - bw / 2).toFixed(1) + '" y="' + (H - padB - h).toFixed(1) +
+        '" width="' + bw.toFixed(1) + '" height="' + h.toFixed(1) + '" rx="2" fill="#22a06b" opacity=".75"><title>' +
+        esc(d.day) + '：开通 ' + v + ' 笔</title></rect>';
+    });
+    var dots = '';
+    series.forEach(function (d, i) {
+      if (i === n - 1 || Number(d[key]) > 0) {
+        dots += '<circle cx="' + pts[i][0].toFixed(1) + '" cy="' + pts[i][1].toFixed(1) +
+          '" r="' + (i === n - 1 ? 4 : 2.6) + '" fill="#fff" stroke="#dc2743" stroke-width="2"><title>' +
+          esc(d.day) + '：' + Number(d[key] || 0) + ' 次</title></circle>';
+      }
+    });
+    var labels = '';
+    series.forEach(function (d, i) {
+      if (i % 2 === 0 || i === n - 1) {
+        labels += '<text x="' + (padL + i * stepX).toFixed(1) + '" y="' + (H - 6) +
+          '" font-size="10" fill="#8e8e93" text-anchor="middle">' + esc(fmtDay(d.day)) + '</text>';
+      }
+    });
+    return '<svg class="chart" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' +
+      '<defs><linearGradient id="ag" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0%" stop-color="#dc2743" stop-opacity=".26"/>' +
+      '<stop offset="100%" stop-color="#dc2743" stop-opacity="0"/></linearGradient></defs>' +
+      '<polygon points="' + area + '" fill="url(#ag)"/>' +
+      '<polyline points="' + line + '" fill="none" stroke="#dc2743" stroke-width="2.2" ' +
+      'stroke-linejoin="round" stroke-linecap="round"/>' +
+      bars + dots + labels + '</svg>';
+  }
+  function maxPaid(series) {
+    var m = 1;
+    series.forEach(function (d) { m = Math.max(m, Number(d.paidOrders || 0)); });
+    return m;
+  }
+  function renderDash() {
+    var k = S.kpi || {};
+    var y = S.series.length > 1 ? S.series[S.series.length - 2] : null;
+    var diff = y ? Number(k.callsToday || 0) - Number(y.calls || 0) : 0;
+    var diffTxt = y ? (diff === 0 ? '与昨天持平'
+      : '<span class="' + (diff > 0 ? 'trend-up' : 'trend-down') + '">' +
+        (diff > 0 ? '↑' : '↓') + ' ' + Math.abs(diff) + ' 次</span> 较昨天') : '';
+    $('kpiRow').innerHTML =
+      kpiCard('☺', 'blue', '账号总数', Number(k.accounts || 0),
+        '今日新增 <b>' + Number(k.newToday || 0) + '</b> · 今日活跃 <b>' + Number(k.activeToday || 0) + '</b>') +
+      kpiCard('✦', 'violet', '今日 AI 调用', Number(k.callsToday || 0),
+        diffTxt + ' · 累计 <b>' + Number(k.callsTotal || 0) + '</b> 次') +
+      kpiCard('▤', 'amber', '待处理订单', Number(k.pendingOrders || 0),
+        '累计已开通 <b>' + Number(k.paidOrders || 0) + '</b> 笔') +
+      kpiCard('￥', 'green', '今日收入', money(k.revenueToday),
+        '本月 <b>' + money(k.revenueMonth) + '</b> · 累计 <b>' + money(k.revenueTotal) + '</b>');
+    $('chart').innerHTML = areaChart(S.series, 'calls', 190);
+    $('chartHint').textContent = '今天 ' + Number(k.callsToday || 0) + ' 次 · 峰值 ' +
+      Math.max.apply(null, S.series.map(function (d) { return Number(d.calls || 0); }).concat([0])) + ' 次';
+    var dist = [
+      ['免费版', Number(k.freeOnly || 0), 'gray'],
+      ['会员', Number(k.members || 0), 'green'],
+      ['免费不限量', Number(k.free || 0), 'blue'],
+      ['已停用', Number(k.disabled || 0), 'amber']
+    ];
+    var total = dist.reduce(function (a, r) { return a + r[1]; }, 0) || 1;
+    $('dist').innerHTML = dist.map(function (r) {
+      var pct = Math.round(r[1] / total * 100);
+      return '<div style="margin-bottom:12px">' +
+        '<div class="kv-inline" style="justify-content:space-between"><span>' + r[0] + '</span>' +
+        '<span><b>' + r[1] + '</b> 个 · ' + pct + '%</span></div>' +
+        '<div class="bar ' + r[2] + '" style="margin-top:5px"><i style="width:' + pct + '%"></i></div></div>';
+    }).join('') + '<div class="hint" style="margin-top:6px">共 ' + total + ' 个账号；' +
+      '今日登录 ' + Number(k.loginsToday || 0) + ' 次</div>';
+    $('topUsers').innerHTML = S.topUsers.length ? S.topUsers.map(function (u) {
+      return '<div class="feed-item"><div class="avatar plain"><span>' + esc(initial(u.username)) + '</span></div>' +
+        '<div style="flex:1;min-width:0"><b>' + esc(u.username) + '</b>' +
+        '<div class="muted" style="font-size:11.5px">累计 ' + u.totalCalls + ' 次 · 今日 ' + u.callsToday + ' 次' +
+        (u.free ? ' · 免费不限量' : (u.member ? ' · 会员' : '')) +
+        (u.status === 'disabled' ? ' · 已停用' : '') + '</div></div></div>';
+    }).join('') : '<div class="empty">还没有 AI 调用记录</div>';
+    $('recentLogs').innerHTML = S.logs.length ? S.logs.slice(0, 6).map(function (l) {
+      return '<div class="feed-item"><span class="t">' + fmtClock(l.t) + '</span>' +
+        '<div style="flex:1;min-width:0"><b>' + esc(l.action) + '</b> ' + esc(l.target || '') +
+        '<div class="muted" style="font-size:11.5px">' + esc(l.detail || '') +
+        (l.ip ? ' · ' + esc(l.ip) : '') + '</div></div></div>';
+    }).join('') : '<div class="empty">还没有后台操作记录</div>';
+    $('liveInfo').innerHTML =
+      '<span>修订号 <b id="revText">' + (S.live ? S.live.rev : '-') + '</b></span>' +
+      '<span>最近同步 <b id="syncText2">' + (S.live ? fmtClock(S.live.ts) : '-') + '</b></span>' +
+      '<span>锁定账号 <b>' + Number((S.live || {}).locked || 0) + '</b></span>' +
+      '<span>服务端版本 <b>' + esc(serverVersion()) + '</b></span>';
+    $('sysInfo').innerHTML =
+      '<div class="kv">' +
+      '<dt>服务版本</dt><dd>' + esc(serverVersion()) + '（/ai/health 可查）</dd>' +
+      '<dt>账号模式</dt><dd>' + esc((S.health && S.health.authMode) || '-') +
+      ((S.health && S.health.mock) ? ' · 模拟模式（不调用 DeepSeek）' : '') + '</dd>' +
+      '<dt>账号总数</dt><dd>' + Number(k.accounts || 0) + ' 个</dd>' +
+      '<dt>免费额度</dt><dd>每天 ' + FREE_DAILY + ' 次；会员日上限 ' + MEMBER_CAP + ' 次（防滥用）</dd>' +
+      '<dt>数据存储</dt><dd>服务器 <code>data/*.json</code>（原子写 + 启动备份，无数据库依赖）</dd>' +
+      '<dt>管理员密钥</dt><dd>' + (S.key ? '已保存在本浏览器（' + esc(S.key.slice(0, 2)) + '****）' : '未填写') + '</dd>' +
+      '<dt>命令行</dt><dd><code>python3 admin_cli.py list | confirm &lt;订单号&gt; | grant &lt;用户名&gt; &lt;天数&gt;</code></dd>' +
+      '</div>';
+  }
+  function serverVersion() {
+    return (S.health && S.health.version) || VERSION;
+  }
+
+  /* ---------------------------------------------------------- 用户 */
+  function filteredUsers() {
+    var kw = S.q.trim().toLowerCase();
+    var list = S.users.filter(function (u) {
+      if (S.filter === 'member' && !u.member) return false;
+      if (S.filter === 'free' && !u.free) return false;
+      if (S.filter === 'disabled' && u.status !== 'disabled') return false;
+      if (S.filter === 'active' && !isTodayTs(u.lastLogin || u.last)) return false;
+      if (!kw) return true;
+      return [u.username, u.displayName, u.note, u.lastIP, u.userId].some(function (v) {
+        return String(v || '').toLowerCase().indexOf(kw) >= 0;
       });
-    };
-    if (wait.length) { html += '<div class="hint">待处理 ' + wait.length + ' 笔</div>'; block(wait); }
-    if (done.length) { html += '<div class="hint" style="margin-top:10px">最近已开通</div>'; block(done); }
-    if (rest.length) { html += '<div class="hint" style="margin-top:10px">其它</div>'; block(rest); }
-    box.innerHTML = html;
-    Array.prototype.forEach.call(box.querySelectorAll("[data-confirm]"), function (b) {
-      b.addEventListener("click", function () { confirmOrder(b.getAttribute("data-confirm"), b); });
     });
-  }
-
-  function loadOrders() {
-    if (!getKey()) { $("orders").innerHTML = '<div class="hint err">请先填写并保存管理员密钥。</div>'; return; }
-    api("/ai/admin/orders", {}).then(function (res) {
-      if (!res.data.ok) { showErr($("orders"), res); return; }
-      renderOrders(res.data.orders || []);
-    }).catch(function (e) {
-      $("orders").innerHTML = '<div class="err">无法连接服务：' + e + "</div>";
+    var key = S.sort;
+    list.sort(function (a, b) {
+      if (key === 'name') return String(a.username || '').localeCompare(String(b.username || ''), 'zh');
+      if (key === 'calls') return Number(b.totalCalls || 0) - Number(a.totalCalls || 0);
+      if (key === 'today') return todayCalls(b) - todayCalls(a);
+      if (key === 'created') return Number(b.created || b.first || 0) - Number(a.created || a.first || 0);
+      return Number(b.lastLogin || b.last || 0) - Number(a.lastLogin || a.last || 0);
     });
+    return list;
   }
-
-  function confirmOrder(id, btn) {
-    if (!confirm("确认已收到这笔款项？确认后会立即为其开通会员。")) return;
-    btn.disabled = true;
-    btn.textContent = "处理中...";
-    api("/ai/admin/confirm", { id: id }).then(function (res) {
-      if (!res.data.ok) { showErr($("out"), res); btn.disabled = false; btn.textContent = "确认收款并开通"; return; }
-      $("out").textContent = "已开通：" + id + "，会员到期 " + fmtTime(res.data.memberUntil);
-      loadOrders();
-    });
+  function todayCalls(u) {
+    return Number(u.freeUsedToday || 0) + Number(u.memberUsedToday || 0) + Number(u.unlimitedUsedToday || 0);
   }
-
-  $("save").addEventListener("click", function () {
-    setKey($("key").value.trim());
-    $("out").textContent = "密钥已保存在本浏览器。";
-    loadOrders();
-  });
-  $("clear").addEventListener("click", function () {
-    setKey(""); $("key").value = ""; $("out").textContent = "已清除本浏览器里的密钥。";
-  });
-  $("refresh").addEventListener("click", loadOrders);
-  $("grant").addEventListener("click", function () {
-    var u = $("uname").value.trim(), d = parseInt($("days").value, 10) || 0;
-    if (!u || d <= 0) { $("out").textContent = "请填写用户名与天数。"; return; }
-    api("/ai/admin/grant", { username: u, days: d }).then(function (res) {
-      if (!res.data.ok) { showErr($("out"), res); return; }
-      $("out").textContent = "已给 " + u + " 加 " + d + " 天，会员到期 " + fmtTime(res.data.memberUntil);
-      loadOrders();
-    });
-  });
-  $("lookup").addEventListener("click", function () {
-    var u = $("uname").value.trim();
-    if (!u) { $("out").textContent = "请填写用户名。"; return; }
-    api("/ai/admin/lookup", { username: u }).then(function (res) {
-      if (!res.data.ok) { showErr($("out"), res); return; }
-      var q = res.data.quota || {};
-      $("out").textContent =
-        "用户：" + res.data.username + "（id=" + res.data.userId + "）\n" +
-        "会员到期：" + (q.memberUntil ? fmtTime(q.memberUntil) : "未开通") + "\n" +
-        "今日用量：免费 " + q.freeUsedToday + "/" + q.freeQuota + " 次，会员 " +
-        q.memberUsedToday + "/" + q.memberCap + " 次\n" +
-        "今日剩余：" + q.remainingToday + "，累计调用：" + q.totalCalls;
-    });
-  });
-  /* ---------- 用户与 AI 额度 ---------- */
-  var USERS = [];
-  var FREE_DAILY = 3, MEMBER_CAP = 300;
-
-  function esc(s) {
-    return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-  }
-  function isTodayTs(ts) {
-    if (!ts) return false;
-    var d = new Date(ts * 1000), t = new Date();
-    return d.getFullYear() === t.getFullYear() && d.getMonth() === t.getMonth() &&
-           d.getDate() === t.getDate();
-  }
-  function usageText(u) {
-    if (u.free) return "不限量 · 今日 " + u.unlimitedUsedToday + " 次";
-    if (u.member) return "会员 · 今日 " + u.memberUsedToday + " / " + MEMBER_CAP + " 次";
-    return "免费 · 今日 " + u.freeUsedToday + " / " + FREE_DAILY +
-           " 次（余 " + u.remainingToday + "）";
-  }
-
   function renderUsers() {
-    var box = $("users");
-    var kw = ($("uq").value || "").trim().toLowerCase();
-    var list = USERS.filter(function (u) {
-      return !kw || String(u.username || "").toLowerCase().indexOf(kw) >= 0;
-    });
-    if (!list.length) {
-      box.innerHTML = '<div class="hint">' +
-        (USERS.length ? "没有匹配的用户。" : "还没有用户登录记录。") + "</div>";
+    var box = $('users');
+    if (!S.users.length && S.ready) {
+      box.innerHTML = '<div class="empty">还没有任何账号。用上面的「新建账号」建一个，或让用户在软件里注册。</div>';
+      $('uPager').innerHTML = '';
       return;
     }
-    var todayUsers = list.filter(function (u) { return isTodayTs(u.last); });
+    var list = filteredUsers();
+    var page = Math.min(S.page, Math.max(1, Math.ceil(list.length / S.per)));
+    S.page = page;
+    var slice = list.slice((page - 1) * S.per, page * S.per);
+    var todayUsers = list.filter(function (u) { return isTodayTs(u.lastLogin || u.last); }).length;
     var freeCount = list.filter(function (u) { return u.free; }).length;
-    var offCount = list.filter(function (u) { return u.status === "disabled"; }).length;
-    var todayCalls = list.reduce(function (a, u) {
-      return a + Number(u.freeUsedToday || 0) + Number(u.memberUsedToday || 0) +
-             Number(u.unlimitedUsedToday || 0);
-    }, 0);
+    var offCount = list.filter(function (u) { return u.status === 'disabled'; }).length;
+    var calls = list.reduce(function (a, u) { return a + todayCalls(u); }, 0);
     var html = '<div class="summary">' +
-      "<span>账号 <b>" + list.length + "</b> 个</span>" +
-      "<span>今日登录 <b>" + todayUsers.length + "</b> 个</span>" +
-      "<span>免费不限量 <b>" + freeCount + "</b> 个</span>" +
-      "<span>已停用 <b>" + offCount + "</b> 个</span>" +
-      "<span>今日 AI 调用 <b>" + todayCalls + "</b> 次</span>" +
-      "</div>";
+      '<span>账号 <b>' + list.length + '</b> 个</span>' +
+      '<span>今日登录 <b>' + todayUsers + '</b> 个</span>' +
+      '<span>免费不限量 <b>' + freeCount + '</b> 个</span>' +
+      '<span>已停用 <b>' + offCount + '</b> 个</span>' +
+      '<span>今日 AI 调用 <b>' + calls + '</b> 次</span>' +
+      '</div>';
     html += '<table class="tbl"><thead><tr>' +
-      "<th>账号</th><th>注册时间</th><th>最后登录</th><th>AI 额度</th>" +
-      "<th>累计</th><th>会员到期</th><th>状态</th><th>备注</th><th>操作</th>" +
-      "</tr></thead><tbody>";
-    list.forEach(function (u) {
+      '<th style="width:30px"><input type="checkbox" id="uAll"></th>' +
+      '<th>账号</th><th>注册时间</th><th>最后登录</th><th>AI 额度</th>' +
+      '<th>累计</th><th>会员到期</th><th>状态</th><th>备注</th><th>操作</th>' +
+      '</tr></thead><tbody>';
+    slice.forEach(function (u) {
       var name = esc(u.username);
-      var st = String(u.status || "");
-      var stateBadge = st === "disabled"
-        ? '<span class="badge b-off">已停用</span>'
-        : (!u.account ? '<span class="badge b-off">无账号</span>'
-          : (u.free ? '<span class="badge b-free">免费不限量</span>'
-            : (u.member ? '<span class="badge b-member">会员</span>' : "免费版")));
-      html += "<tr>" +
-        "<td><b>" + (name || "(未命名)") + '</b><div class="oid">' + esc(u.userId) + "</div></td>" +
-        "<td>" + fmtTime(u.created || u.first) + "</td>" +
-        "<td>" + fmtTime(u.lastLogin || u.last) +
-          (u.lastIP ? '<div class="oid">' + esc(u.lastIP) + "</div>" : "") + "</td>" +
-        "<td>" + usageText(u) + "</td>" +
-        "<td>" + Number(u.totalCalls || 0) + " 次</td>" +
-        "<td>" + (u.member ? fmtTime(u.memberUntil) : "-") + "</td>" +
-        "<td>" + stateBadge + "</td>" +
-        "<td>" + (u.note ? esc(u.note) : "-") + "</td>" +
+      var st = String(u.status || '');
+      html += '<tr data-row="' + name + '"' + (S.sel[u.username] ? ' class="sel"' : '') + '>' +
+        '<td><input type="checkbox" data-check="' + name + '"' + (S.sel[u.username] ? ' checked' : '') + '></td>' +
+        '<td><div class="who"><div class="avatar"><span>' + esc(initial(u.username)) + '</span></div>' +
+        '<div style="min-width:0"><b>' + (name || '(未命名)') + '</b>' +
+        (u.displayName ? '<div class="muted" style="font-size:11.5px">' + esc(u.displayName) + '</div>' : '') +
+        '<div class="oid">' + esc(String(u.userId || '').slice(0, 8)) + '</div></div></div></td>' +
+        '<td>' + fmtTime(u.created || u.first) + '</td>' +
+        '<td>' + fmtTime(u.lastLogin || u.last) +
+        (u.lastIP ? '<div class="oid">' + esc(u.lastIP) + '</div>' : '') + '</td>' +
+        '<td>' + usageText(u) + '</td>' +
+        '<td>' + Number(u.totalCalls || 0) + ' 次</td>' +
+        '<td>' + (u.member ? fmtTime(u.memberUntil) : '-') + '</td>' +
+        '<td>' + stateBadge(u) + '</td>' +
+        '<td class="wrap">' + (u.note ? esc(u.note) : '-') + '</td>' +
         '<td class="ops">' +
-        '<button data-reset="' + name + '">重置今日</button>' +
-        '<button data-zero="' + name + '">清零累计</button>' +
+        '<button class="btn sm" data-reset="' + name + '">重置今日</button>' +
+        '<button class="btn sm" data-zero="' + name + '">清零累计</button>' +
         (u.free
-          ? '<button data-free="0" data-name="' + name + '">取消免费</button>'
-          : '<button class="primary" data-free="1" data-name="' + name +
-            '">开通免费不限量</button>') +
+          ? '<button class="btn sm" data-free="0" data-name="' + name + '">取消免费</button>'
+          : '<button class="btn sm primary" data-free="1" data-name="' + name + '">开通免费不限量</button>') +
         (u.account ? (
-          '<button data-pwd="' + name + '">重置密码</button>' +
-          '<button data-note="' + name + '">备注</button>' +
-          '<button data-kick="' + name + '">踢下线</button>' +
-          (st === "disabled"
-            ? '<button class="primary" data-status="active" data-name="' + name + '">启用</button>'
-            : '<button data-status="disabled" data-name="' + name + '">停用</button>')
-        ) : "") +
-        "</td></tr>";
+          '<button class="btn sm" data-pwd="' + name + '">重置密码</button>' +
+          '<button class="btn sm" data-note="' + name + '">备注</button>' +
+          '<button class="btn sm" data-kick="' + name + '">踢下线</button>' +
+          (st === 'disabled'
+            ? '<button class="btn sm primary" data-status="active" data-name="' + name + '">启用</button>'
+            : '<button class="btn sm" data-status="disabled" data-name="' + name + '">停用</button>')
+        ) : '') +
+        '</td></tr>';
     });
-    html += "</tbody></table>";
+    html += '</tbody></table>';
     box.innerHTML = html;
-    Array.prototype.forEach.call(box.querySelectorAll("[data-reset]"), function (b) {
-      b.addEventListener("click", function () {
-        resetUsage(b.getAttribute("data-reset"), false);
+    var pages = Math.max(1, Math.ceil(list.length / S.per));
+    $('uPager').innerHTML = pages > 1
+      ? '<span>第 ' + page + ' / ' + pages + ' 页</span>' +
+        '<button class="btn sm" data-page="prev"' + (page <= 1 ? ' disabled' : '') + '>上一页</button>' +
+        '<button class="btn sm" data-page="next"' + (page >= pages ? ' disabled' : '') + '>下一页</button>'
+      : '<span>共 ' + list.length + ' 条</span>';
+    bindUserRow(box);
+  }
+  function bindUserRow(box) {
+    $$('[data-reset]', box).forEach(function (b) {
+      b.addEventListener('click', function (e) { e.stopPropagation(); resetUsage(b.getAttribute('data-reset'), false); });
+    });
+    $$('[data-zero]', box).forEach(function (b) {
+      b.addEventListener('click', function (e) { e.stopPropagation(); resetUsage(b.getAttribute('data-zero'), true); });
+    });
+    $$('[data-free]', box).forEach(function (b) {
+      b.addEventListener('click', function (e) {
+        e.stopPropagation();
+        setFree(b.getAttribute('data-name'), b.getAttribute('data-free') === '1');
       });
     });
-    Array.prototype.forEach.call(box.querySelectorAll("[data-zero]"), function (b) {
-      b.addEventListener("click", function () {
-        resetUsage(b.getAttribute("data-zero"), true);
+    $$('[data-pwd]', box).forEach(function (b) {
+      b.addEventListener('click', function (e) { e.stopPropagation(); resetPwd(b.getAttribute('data-pwd')); });
+    });
+    $$('[data-status]', box).forEach(function (b) {
+      b.addEventListener('click', function (e) {
+        e.stopPropagation();
+        setStatus(b.getAttribute('data-name'), b.getAttribute('data-status'));
       });
     });
-    Array.prototype.forEach.call(box.querySelectorAll("[data-free]"), function (b) {
-      b.addEventListener("click", function () {
-        setFree(b.getAttribute("data-name"), b.getAttribute("data-free") === "1");
+    $$('[data-kick]', box).forEach(function (b) {
+      b.addEventListener('click', function (e) { e.stopPropagation(); kickUser(b.getAttribute('data-kick')); });
+    });
+    $$('[data-note]', box).forEach(function (b) {
+      b.addEventListener('click', function (e) { e.stopPropagation(); setNote(b.getAttribute('data-note')); });
+    });
+    $$('[data-check]', box).forEach(function (c) {
+      c.addEventListener('click', function (e) { e.stopPropagation(); });
+      c.addEventListener('change', function () {
+        var n = c.getAttribute('data-check');
+        if (c.checked) S.sel[n] = true; else delete S.sel[n];
+        renderUsers();
       });
     });
-    Array.prototype.forEach.call(box.querySelectorAll("[data-pwd]"), function (b) {
-      b.addEventListener("click", function () { resetPwd(b.getAttribute("data-pwd")); });
+    $$('tr[data-row]', box).forEach(function (tr) {
+      tr.addEventListener('click', function () { openDrawer(tr.getAttribute('data-row')); });
     });
-    Array.prototype.forEach.call(box.querySelectorAll("[data-status]"), function (b) {
-      b.addEventListener("click", function () {
-        setStatus(b.getAttribute("data-name"), b.getAttribute("data-status"));
+    var all = $('uAll');
+    if (all) all.addEventListener('change', function () {
+      var list = filteredUsers();
+      if (all.checked) list.forEach(function (u) { S.sel[u.username] = true; });
+      else S.sel = {};
+      renderUsers();
+    });
+    $$('[data-page]', $('uPager')).forEach(function (b) {
+      b.addEventListener('click', function () {
+        S.page += (b.getAttribute('data-page') === 'next' ? 1 : -1);
+        renderUsers();
       });
     });
-    Array.prototype.forEach.call(box.querySelectorAll("[data-kick]"), function (b) {
-      b.addEventListener("click", function () { kickUser(b.getAttribute("data-kick")); });
-    });
-    Array.prototype.forEach.call(box.querySelectorAll("[data-note]"), function (b) {
-      b.addEventListener("click", function () { setNote(b.getAttribute("data-note")); });
-    });
+    var n = Object.keys(S.sel).length;
+    $('selCount').textContent = n;
+    $('selbar').classList.toggle('on', n > 0);
   }
 
+  /* ---------------------------------------------------------- 用户抽屉 */
+  function userOf(name) {
+    for (var i = 0; i < S.users.length; i++) if (S.users[i].username === name) return S.users[i];
+    return null;
+  }
+  function openDrawer(name) {
+    var u = userOf(name);
+    if (!u) return;
+    S.openUser = name;
+    $('dName').textContent = u.username || '(未命名)';
+    $('dId').textContent = u.userId || '';
+    $('dAvatar').innerHTML = '<span>' + esc(initial(u.username)) + '</span>';
+    var mine = S.orders.filter(function (o) { return o.userId === u.userId; });
+    $('dBody').innerHTML =
+      '<div class="sec-title">账号</div><dl class="kv">' +
+      '<dt>显示名</dt><dd>' + esc(u.displayName || '-') + '</dd>' +
+      '<dt>状态</dt><dd>' + stateBadge(u) + '</dd>' +
+      '<dt>注册时间</dt><dd>' + fmtTime(u.created || u.first) + '</dd>' +
+      '<dt>最后登录</dt><dd>' + fmtTime(u.lastLogin || u.last) + '</dd>' +
+      '<dt>最后 IP</dt><dd class="mono">' + esc(u.lastIP || '-') + '</dd>' +
+      '<dt>凭证版本</dt><dd>' + Number(u.tokenVer || 0) + '</dd>' +
+      '</dl>' +
+      '<div class="sec-title">额度</div><dl class="kv">' +
+      '<dt>当前档位</dt><dd>' + usageText(u) + '</dd>' +
+      '<dt>会员到期</dt><dd>' + (u.member ? fmtTime(u.memberUntil) : '未开通') + '</dd>' +
+      '<dt>今日剩余</dt><dd>' + (u.free ? '不限量' : Number(u.remainingToday || 0) + ' 次') + '</dd>' +
+      '<dt>累计调用</dt><dd>' + Number(u.totalCalls || 0) + ' 次</dd>' +
+      '<dt>备注</dt><dd>' + (u.note ? esc(u.note) : '-') + '</dd>' +
+      '</dl>' +
+      '<div class="sec-title">该账号的订单（' + mine.length + '）</div>' +
+      (mine.length ? mine.slice(0, 8).map(function (o) {
+        return '<div class="feed-item"><div style="flex:1"><span class="badge b-' + o.status + '">' +
+          statusText(o.status) + '</span> <b>' + money(o.amount) + '</b> ' + esc(o.planName || o.plan) +
+          '<div class="oid">' + esc(o.id) + ' · ' + fmtTime(o.created) + '</div></div></div>';
+      }).join('') : '<div class="hint">暂无订单</div>');
+    $('dFoot').innerHTML =
+      '<input id="dDays" type="number" value="30" min="1" style="width:82px">' +
+      '<button class="btn" data-d="grant">加天数</button>' +
+      '<button class="btn" data-d="reset">重置今日</button>' +
+      '<button class="btn" data-d="zero">清零累计</button>' +
+      '<button class="btn" data-d="free">' + (u.free ? '取消免费不限量' : '开通免费不限量') + '</button>' +
+      '<button class="btn" data-d="pwd">重置密码</button>' +
+      '<button class="btn" data-d="note">改备注</button>' +
+      '<button class="btn" data-d="kick">踢下线</button>' +
+      (u.status === 'disabled'
+        ? '<button class="btn" data-d="enable">启用账号</button>'
+        : '<button class="btn danger" data-d="disable">停用账号</button>');
+    $$('[data-d]', $('dFoot')).forEach(function (b) {
+      b.addEventListener('click', function () { drawerAction(b.getAttribute('data-d'), u); });
+    });
+    $('drawerMask').classList.add('on');
+    $('drawer').classList.add('on');
+  }
+  function closeDrawer() {
+    $('drawerMask').classList.remove('on');
+    $('drawer').classList.remove('on');
+    S.openUser = '';
+  }
+  $('dClose').addEventListener('click', closeDrawer);
+  $('drawerMask').addEventListener('click', closeDrawer);
+  function drawerAction(kind, u) {
+    if (kind === 'grant') {
+      var d = parseInt($('dDays').value, 10) || 0;
+      if (d <= 0) { say('天数要大于 0', 'err'); return; }
+      ask({ title: '手工加天数', body: '给「' + u.username + '」加 ' + d + ' 天会员？' }, function () {
+        api('/ai/admin/grant', { username: u.username, days: d }).then(function (res) {
+          if (!res.data.ok) return err(res);
+          say('已给 ' + u.username + ' 加 ' + d + ' 天，到期 ' + fmtTime(res.data.memberUntil), 'ok');
+          refresh(true);
+        });
+      });
+      return;
+    }
+    if (kind === 'reset') return resetUsage(u.username, false);
+    if (kind === 'zero') return resetUsage(u.username, true);
+    if (kind === 'free') return setFree(u.username, !u.free);
+    if (kind === 'pwd') return resetPwd(u.username);
+    if (kind === 'note') return setNote(u.username);
+    if (kind === 'kick') return kickUser(u.username);
+    if (kind === 'disable') return setStatus(u.username, 'disabled');
+    if (kind === 'enable') return setStatus(u.username, 'active');
+  }
+
+  /* ---------------------------------------------------------- 用户操作 */
+  function after(action) { say(action, 'ok'); refresh(true); }
   function resetUsage(name, zeroTotal) {
     if (!name) return;
-    if (!confirm(zeroTotal
-      ? "把「" + name + "」的累计调用数一起清零？（今日用量同样清零）"
-      : "把「" + name + "」的今日用量清零？")) return;
-    var body = { username: name };
-    if (zeroTotal) body.total = true;
-    api("/ai/admin/reset", body).then(function (res) {
-      if (!res.data.ok) { showErr($("out"), res); return; }
-      $("out").textContent = "已重置「" + name + "」" + (zeroTotal ? "（含累计）" : "（今日用量）");
-      loadUsers();
+    ask({
+      title: zeroTotal ? '清零累计调用' : '重置今日用量',
+      body: zeroTotal
+        ? '把「' + name + '」的累计调用数一起清零？\n（今日用量同样清零，不可撤销）'
+        : '把「' + name + '」的今日用量清零？\n（累计调用数保留）',
+      danger: zeroTotal
+    }, function () {
+      var body = { username: name };
+      if (zeroTotal) body.total = true;
+      api('/ai/admin/reset', body).then(function (res) {
+        if (!res.data.ok) return err(res);
+        after('已重置「' + name + '」' + (zeroTotal ? '（含累计）' : '（今日用量）'));
+      });
     });
   }
-
   function setFree(name, on) {
     if (!name) return;
-    if (!confirm(on ? "给「" + name + "」开通免费不限量 AI 润色？"
-                    : "取消「" + name + "」的免费不限量？")) return;
-    api("/ai/admin/free", { username: name, on: on }).then(function (res) {
-      if (!res.data.ok) { showErr($("out"), res); return; }
-      $("out").textContent = (on ? "已开通免费不限量：" : "已取消免费不限量：") + name;
-      loadUsers();
+    ask({
+      title: on ? '开通免费不限量' : '取消免费不限量',
+      body: on ? '给「' + name + '」开通免费不限量 AI 润色？\n（不受每天 ' + FREE_DAILY + ' 次限制，仍保留 2 秒最小间隔）'
+               : '取消「' + name + '」的免费不限量？'
+    }, function () {
+      api('/ai/admin/free', { username: name, on: on }).then(function (res) {
+        if (!res.data.ok) return err(res);
+        after((on ? '已开通免费不限量：' : '已取消免费不限量：') + name);
+      });
     });
   }
-
-  /* ---------- 账号管理（4.1.0） ---------- */
   function resetPwd(name) {
     if (!name) return;
-    if (!confirm("重置「" + name + "」的密码？\n" +
-      "· 会生成一个一次性临时密码，只显示这一次\n" +
-      "· 该账号已登录的旧令牌会立刻失效")) return;
-    api("/ai/admin/account/resetpwd", { name: name }).then(function (res) {
-      if (!res.data.ok) { showErr($("out"), res); return; }
-      $("out").textContent = "已重置「" + name + "」的密码。\n" +
-        "临时密码：" + res.data.tempPassword + "\n" +
-        "（只显示这一次，请转告用户登录后自行修改）";
-      loadUsers();
+    ask({
+      title: '重置密码',
+      body: '重置「' + name + '」的密码？\n· 会生成一个一次性临时密码，只显示这一次\n· 该账号已登录的旧令牌会立刻失效',
+      danger: true
+    }, function () {
+      api('/ai/admin/account/resetpwd', { name: name }).then(function (res) {
+        if (!res.data.ok) return err(res);
+        var temp = res.data.tempPassword;
+        say('已重置「' + name + '」的密码。\n临时密码：' + temp + '\n（只显示这一次，请转告用户登录后自行修改）', 'ok');
+        copyText(temp, '临时密码已复制到剪贴板');
+        refresh(true);
+      });
     });
   }
-
   function setStatus(name, status) {
     if (!name) return;
-    var off = status === "disabled";
-    if (!confirm(off
-      ? "停用「" + name + "」？该账号将无法登录，已登录的旧令牌立刻失效。"
-      : "启用「" + name + "」？启用后该账号可以重新登录。")) return;
-    api("/ai/admin/account/status", { name: name, status: status }).then(function (res) {
-      if (!res.data.ok) { showErr($("out"), res); return; }
-      $("out").textContent = "已" + (off ? "停用：" : "启用：") + name;
-      loadUsers();
+    var off = status === 'disabled';
+    ask({
+      title: off ? '停用账号' : '启用账号',
+      body: off ? '停用「' + name + '」？\n该账号将无法登录，已登录的旧令牌立刻失效。'
+                : '启用「' + name + '」？启用后该账号可以重新登录。',
+      danger: off
+    }, function () {
+      api('/ai/admin/account/status', { name: name, status: status }).then(function (res) {
+        if (!res.data.ok) return err(res);
+        after((off ? '已停用：' : '已启用：') + name);
+      });
     });
   }
-
   function kickUser(name) {
     if (!name) return;
-    if (!confirm("把「" + name + "」踢下线？\n旧令牌立刻失效，用户需要重新登录（密码不变）。")) return;
-    api("/ai/admin/account/kick", { name: name }).then(function (res) {
-      if (!res.data.ok) { showErr($("out"), res); return; }
-      $("out").textContent = "已把「" + name + "」踢下线（凭证版本 -> " +
-        ((res.data.account || {}).tokenVer || "?") + "）";
-      loadUsers();
+    ask({
+      title: '踢下线',
+      body: '把「' + name + '」踢下线？\n旧令牌立刻失效，用户需要重新登录（密码不变）。'
+    }, function () {
+      api('/ai/admin/account/kick', { name: name }).then(function (res) {
+        if (!res.data.ok) return err(res);
+        var u = res.data.account || {};
+        after('已把「' + name + '」踢下线（凭证版本 -> ' + (u.tokenVer || '?') + '）');
+      });
     });
   }
-
   function setNote(name) {
     if (!name) return;
-    var cur = "";
-    USERS.forEach(function (u) { if (u.username === name) cur = u.note || ""; });
-    var note = prompt("「" + name + "」的备注（仅后台可见，留空即清除）：", cur);
-    if (note === null) return;
-    api("/ai/admin/account/note", { name: name, note: note }).then(function (res) {
-      if (!res.data.ok) { showErr($("out"), res); return; }
-      $("out").textContent = "已更新「" + name + "」的备注。";
-      loadUsers();
+    var u = userOf(name) || {};
+    ask({
+      title: '备注「' + name + '」',
+      body: '仅后台可见，留空即清除。',
+      input: true,
+      value: u.note || '',
+      placeholder: '例如：VIP 客户 / 微信名 xxx / 已线下退款'
+    }, function (val) {
+      api('/ai/admin/account/note', { name: name, note: val }).then(function (res) {
+        if (!res.data.ok) return err(res);
+        after('已更新「' + name + '」的备注');
+      });
     });
   }
-
   function createAccount() {
-    var name = ($("nname").value || "").trim();
-    var pwd = $("npwd").value || "";
-    if (!name) { $("out").textContent = "请先填用户名。"; return; }
-    if (pwd.length < 8) { $("out").textContent = "密码不符合要求：至少 8 位。"; return; }
-    if (!confirm("新建账号「" + name + "」？")) return;
-    api("/ai/admin/account/create", { name: name, password: pwd }).then(function (res) {
-      if (!res.data.ok) { showErr($("out"), res); return; }
-      $("out").textContent = "已新建账号：" + name + "\n（用户可直接用它登录）";
-      $("nname").value = "";
-      $("npwd").value = "";
-      loadUsers();
+    var name = ($('nname').value || '').trim();
+    var pwd = $('npwd').value || '';
+    if (!name) { say('请先填用户名', 'err'); return; }
+    if (pwd.length < 8) { say('密码不符合要求：至少 8 位', 'err'); return; }
+    ask({ title: '新建账号', body: '新建账号「' + name + '」？用户可直接用它登录。' }, function () {
+      api('/ai/admin/account/create', { name: name, password: pwd }).then(function (res) {
+        if (!res.data.ok) return err(res);
+        $('nname').value = ''; $('npwd').value = '';
+        after('已新建账号：' + name);
+      });
+    });
+  }
+  function batch(kind) {
+    var names = Object.keys(S.sel);
+    if (!names.length) return;
+    var labels = {
+      reset: '重置今日用量', zero: '清零累计调用', kick: '踢下线',
+      disable: '停用', enable: '启用'
+    };
+    ask({
+      title: '批量' + labels[kind],
+      body: '对选中的 ' + names.length + ' 个账号执行「' + labels[kind] + '」？',
+      danger: kind === 'disable' || kind === 'zero'
+    }, function () {
+      var done = 0, fails = [];
+      var next = function (i) {
+        if (i >= names.length) {
+          S.sel = {};
+          say('批量' + labels[kind] + '完成：成功 ' + done + ' 个' +
+              (fails.length ? '，失败 ' + fails.length + ' 个（' + fails.join('、') + '）' : ''), 
+              fails.length ? 'err' : 'ok');
+          refresh(true);
+          return;
+        }
+        var n = names[i];
+        var p;
+        if (kind === 'reset') p = api('/ai/admin/reset', { username: n });
+        else if (kind === 'zero') p = api('/ai/admin/reset', { username: n, total: true });
+        else if (kind === 'kick') p = api('/ai/admin/account/kick', { name: n });
+        else p = api('/ai/admin/account/status', { name: n, status: kind === 'disable' ? 'disabled' : 'active' });
+        p.then(function (res) {
+          if (res.data.ok) done++; else fails.push(n);
+          next(i + 1);
+        }).catch(function () { fails.push(n); next(i + 1); });
+      };
+      next(0);
     });
   }
 
-  function loadUsers() {
-    if (!getKey()) {
-      $("users").innerHTML = '<div class="hint err">请先填写并保存管理员密钥。</div>';
-      return;
+  /* ---------------------------------------------------------- 订单 */
+  function filteredOrders() {
+    var kw = S.oq.trim().toLowerCase();
+    return S.orders.filter(function (o) {
+      if (S.ofilter === 'todo' && o.status !== 'pending' && o.status !== 'claimed') return false;
+      if (S.ofilter === 'paid' && o.status !== 'paid') return false;
+      if (S.ofilter === 'canceled' && o.status !== 'canceled') return false;
+      if (!kw) return true;
+      return String(o.id || '').toLowerCase().indexOf(kw) >= 0 ||
+             String(o.name || '').toLowerCase().indexOf(kw) >= 0;
+    });
+  }
+  function orderCard(o) {
+    var can = (o.status === 'pending' || o.status === 'claimed');
+    return '<div class="order">' +
+      '<div class="avatar"><span>' + esc(initial(o.name)) + '</span></div>' +
+      '<div style="flex:1;min-width:0">' +
+      '<div><b>' + esc(o.name || '-') + '</b> <span class="badge b-' + o.status + '">' +
+      statusText(o.status) + '</span></div>' +
+      '<div class="meta">' + esc(o.planName || o.plan) + ' / ' + (o.days || '-') + ' 天 · 下单 ' +
+      fmtTime(o.created) + (o.paidAt ? ' · 开通 ' + fmtTime(o.paidAt) : '') + '</div>' +
+      '<div class="oid">' + esc(o.id) + ' <button class="copy" data-copy="' + esc(o.id) + '">复制</button></div>' +
+      '</div>' +
+      '<div style="text-align:right">' +
+      '<div class="amt">' + money(o.amount) + '</div>' +
+      (can ? '<button class="btn sm primary" data-confirm="' + esc(o.id) + '" style="margin-top:6px">确认收款并开通</button>' : '') +
+      '</div></div>';
+  }
+  function renderOrders() {
+    var list = filteredOrders();
+    var wait = list.filter(function (o) { return o.status === 'pending' || o.status === 'claimed'; });
+    var paid = list.filter(function (o) { return o.status === 'paid'; });
+    var rest = list.filter(function (o) {
+      return o.status !== 'pending' && o.status !== 'claimed' && o.status !== 'paid';
+    });
+    var paidAll = S.orders.filter(function (o) { return o.status === 'paid'; });
+    var today = paidAll.filter(function (o) { return isTodayTs(o.paidAt); });
+    var sum = function (l) { return l.reduce(function (a, o) { return a + Number(o.amount || 0); }, 0); };
+    var html = '<div class="summary">' +
+      '<span>待处理 <b class="' + (wait.length ? 'hot' : '') + '">' + wait.length + '</b> 笔</span>' +
+      '<span>今日已开通 <b>' + today.length + '</b> 笔 · ' + money(sum(today)) + '</span>' +
+      '<span>累计已开通 <b>' + paidAll.length + '</b> 笔 · ' + money(sum(paidAll)) + '</span>' +
+      '</div>';
+    if (!list.length) html += '<div class="empty">没有匹配的订单。</div>';
+    if (wait.length) html += '<div class="hint" style="margin:6px 0">待处理 ' + wait.length + ' 笔</div>' +
+      '<div class="orders">' + wait.map(orderCard).join('') + '</div>';
+    if (paid.length) html += '<div class="hint" style="margin:14px 0 6px">最近已开通</div>' +
+      '<div class="orders">' + paid.slice(0, 20).map(orderCard).join('') + '</div>';
+    if (rest.length) html += '<div class="hint" style="margin:14px 0 6px">其它</div>' +
+      '<div class="orders">' + rest.slice(0, 5).map(orderCard).join('') + '</div>';
+    $('orderList').innerHTML = html;
+    $$('[data-confirm]', $('orderList')).forEach(function (b) {
+      b.addEventListener('click', function () { confirmOrder(b.getAttribute('data-confirm'), b); });
+    });
+    $$('[data-copy]', $('orderList')).forEach(function (b) {
+      b.addEventListener('click', function () { copyText(b.getAttribute('data-copy'), '订单号已复制'); });
+    });
+  }
+  function confirmOrder(id, btn) {
+    ask({
+      title: '确认收款并开通',
+      body: '确认已收到订单 ' + id + ' 的款项？\n确认后会立即为其开通会员。'
+    }, function () {
+      if (btn) { btn.disabled = true; btn.textContent = '处理中…'; }
+      api('/ai/admin/confirm', { id: id }).then(function (res) {
+        if (!res.data.ok) { err(res); if (btn) { btn.disabled = false; btn.textContent = '确认收款并开通'; } return; }
+        say('已开通：' + id + '，会员到期 ' + fmtTime(res.data.memberUntil), 'ok');
+        refresh(true);
+      });
+    });
+  }
+
+  /* ---------------------------------------------------------- 收款码 */
+  function renderPay() {
+    var d = S.paycodes;
+    if (!d) { $('pcWrap').innerHTML = '<div class="empty">正在加载…</div>'; return; }
+    var names = { day: '日卡', month: '月卡' };
+    var mnames = { wechat: '微信', alipay: '支付宝' };
+    var html = '<div class="pc-grid">';
+    d.items.forEach(function (it) {
+      var ts = it.updated ? ('?t=' + it.updated) : '';
+      html += '<div class="pc ' + (it.exists ? 'has' : '') + '">' +
+        '<div class="kv-inline" style="justify-content:center;margin-bottom:8px">' +
+        '<b>' + (names[it.plan] || it.plan) + ' · ' + (mnames[it.method] || it.method) + '</b></div>' +
+        (it.exists
+          ? '<img src="' + it.url + ts + '" alt="收款码">'
+          : '<div class="ph">还没有上传</div>') +
+        '<div class="hint" style="margin:8px 0 10px">' +
+        (it.exists ? Math.round(it.size / 1024) + ' KB · ' + fmtTime(it.updated) : '客户端会退回兜底收款码') + '</div>' +
+        '<div class="chips" style="justify-content:center">' +
+        '<label class="btn sm">' + (it.exists ? '替换' : '上传') +
+        '<input type="file" accept="image/png,image/jpeg,image/webp" style="display:none" ' +
+        'data-upload="' + it.plan + '|' + it.method + '"></label>' +
+        (it.exists ? '<button class="btn sm danger" data-delpc="' + it.plan + '|' + it.method + '">删除</button>' : '') +
+        '</div></div>';
+    });
+    html += '</div>';
+    if (d.legacy && d.legacy.exists) {
+      html += '<div class="hint" style="margin-top:14px">检测到旧版兜底收款码 <code>data/paycode.png</code>，' +
+        '已上传的套餐收款码会优先生效。</div>';
     }
-    api("/ai/admin/users", {}).then(function (res) {
-      if (!res.data.ok) { showErr($("users"), res); return; }
+    $('pcWrap').innerHTML = html;
+    $$('[data-upload]', $('pcWrap')).forEach(function (inp) {
+      inp.addEventListener('change', function () {
+        var f = inp.files && inp.files[0];
+        if (!f) return;
+        if (f.size > 4 * 1024 * 1024) { say('图片太大（上限 4 MB）', 'err'); return; }
+        var parts = inp.getAttribute('data-upload').split('|');
+        var fr = new FileReader();
+        fr.onload = function () {
+          say('正在上传…', 'info');
+          api('/ai/admin/paycode/upload', { plan: parts[0], method: parts[1], data: fr.result })
+            .then(function (res) {
+              if (!res.data.ok) return err(res);
+              S.paycodes = res.data;
+              renderPay();
+              say('收款码已更新（' + parts[0] + '/' + parts[1] + '）', 'ok');
+            });
+        };
+        fr.readAsDataURL(f);
+      });
+    });
+    $$('[data-delpc]', $('pcWrap')).forEach(function (b) {
+      b.addEventListener('click', function () {
+        var parts = b.getAttribute('data-delpc').split('|');
+        ask({ title: '删除收款码', body: '删除 ' + parts[0] + '/' + parts[1] + ' 的收款码？', danger: true }, function () {
+          api('/ai/admin/paycode/delete', { plan: parts[0], method: parts[1] }).then(function (res) {
+            if (!res.data.ok) return err(res);
+            S.paycodes = res.data;
+            renderPay();
+            say('已删除收款码', 'ok');
+          });
+        });
+      });
+    });
+  }
+
+  /* ---------------------------------------------------------- 日志与安全 */
+  function renderLogs() {
+    var rows = S.logs;
+    $('logHint').textContent = '最近 ' + rows.length + ' 条（服务端保留 500 条）';
+    $('logList').innerHTML = rows.length
+      ? '<div class="tblwrap"><table class="tbl"><thead><tr><th>时间</th><th>操作</th><th>对象</th>' +
+        '<th>详情</th><th>来源 IP</th></tr></thead><tbody>' +
+        rows.map(function (l) {
+          return '<tr><td class="mono">' + fmtTime(l.t) + '</td><td><b>' + esc(l.action) + '</b></td>' +
+            '<td>' + esc(l.target || '-') + '</td><td class="wrap">' + esc(l.detail || '-') + '</td>' +
+            '<td class="mono">' + esc(l.ip || '-') + '</td></tr>';
+        }).join('') + '</tbody></table></div>'
+      : '<div class="empty">还没有后台操作记录。做一次「确认收款」「加天数」之类的操作就会出现在这里。</div>';
+    var g = (S.guard && S.guard.guard) || { name: [], ip: [] };
+    var p = (S.guard && S.guard.policy) || {};
+    var guardRows = [];
+    (g.name || []).forEach(function (r) {
+      guardRows.push(['用户名', r.key, r.fails, r.locked, r.waitSec]);
+    });
+    (g.ip || []).forEach(function (r) {
+      guardRows.push(['来源 IP', r.key, r.fails, r.locked, r.waitSec]);
+    });
+    $('guardList').innerHTML = guardRows.length
+      ? '<div class="tblwrap"><table class="tbl"><thead><tr><th>维度</th><th>值</th><th>失败次数</th>' +
+        '<th>状态</th></tr></thead><tbody>' +
+        guardRows.map(function (r) {
+          return '<tr><td>' + r[0] + '</td><td class="mono">' + esc(r[1]) + '</td><td>' + r[2] + '</td>' +
+            '<td>' + (r[3] ? '<span class="badge b-off">锁定中 · 还需 ' + Math.ceil(r[4] / 60) + ' 分钟</span>'
+                           : '<span class="badge b-none">仅计数</span>') + '</td></tr>';
+        }).join('') + '</tbody></table></div>' +
+        '<div class="hint" style="margin-top:10px">策略：同一账号连续失败 ' + (p.maxFail || 5) + ' 次锁定 ' +
+        Math.round((p.lockSec || 600) / 60) + ' 分钟；同一 IP ' + (p.ipMaxFail || 20) + ' 次；窗口 ' +
+        Math.round((p.windowSec || 900) / 60) + ' 分钟。锁定会在成功登录后自动清零。</div>'
+      : '<div class="empty">当前没有被锁定或计数中的登录失败记录。</div>';
+    $('failList').innerHTML = S.adminFails.length
+      ? '<div class="tblwrap"><table class="tbl"><thead><tr><th>时间</th><th>来源 IP</th></tr></thead><tbody>' +
+        S.adminFails.map(function (f) {
+          return '<tr><td class="mono">' + fmtTime(f.t) + '</td><td class="mono">' + esc(f.ip || '-') + '</td></tr>';
+        }).join('') + '</tbody></table></div>' +
+        '<div class="hint" style="margin-top:10px">有人拿着错误的管理员密钥访问后台时会记在这里；' +
+        '只存在服务端内存里（重启即清空），不会被人刷成磁盘炸弹。</div>'
+      : '<div class="empty">没有记录到密钥错误尝试。</div>';
+  }
+
+  /* ---------------------------------------------------------- 数据加载 */
+  function loadTab(tab, cb) {
+    if (!S.key) { cb && cb(); return; }
+    if (tab === 'dash') loadOverview(cb);
+    else if (tab === 'users') loadUsers(cb);
+    else if (tab === 'orders') loadOrders(cb);
+    else if (tab === 'pay') loadPaycodes(cb);
+    else if (tab === 'logs') loadLogs(cb);
+    else if (tab === 'settings') loadSettings(cb);
+  }
+  function loadOverview(cb) {
+    need('/ai/admin/overview').then(function (res) {
+      if (!res.data.ok) { err(res); cb && cb(); return; }
+      S.kpi = res.data.kpi; S.series = res.data.series || []; S.topUsers = res.data.topUsers || [];
+      S.plans = res.data.plans || [];
+      if (S.kpi && S.kpi.rev != null) S.rev = S.kpi.rev;
+      S.ready = true;
+      renderDash();
+      paintBadges();
+      cb && cb();
+    }).catch(function (e) { say('无法连接服务：' + e, 'err'); cb && cb(); });
+  }
+  function loadUsers(cb) {
+    need('/ai/admin/users').then(function (res) {
+      if (!res.data.ok) { $('users').innerHTML = '<div class="empty err">' +
+        ((res.data && res.data.error) || '加载失败') + '</div>'; err(res); cb && cb(); return; }
       FREE_DAILY = Number(res.data.freeDaily || FREE_DAILY);
       MEMBER_CAP = Number(res.data.memberCap || MEMBER_CAP);
-      USERS = res.data.users || [];
+      S.users = res.data.users || [];
+      S.ready = true;
       renderUsers();
-    }).catch(function (e) {
-      $("users").innerHTML = '<div class="err">无法连接服务：' + e + "</div>";
+      paintBadges();
+      if (S.openUser) openDrawer(S.openUser);
+      cb && cb();
+    }).catch(function (e) { say('无法连接服务：' + e, 'err'); cb && cb(); });
+  }
+  function loadOrders(cb) {
+    need('/ai/admin/orders').then(function (res) {
+      if (!res.data.ok) { $('orderList').innerHTML = '<div class="empty err">' +
+        ((res.data && res.data.error) || '加载失败') + '</div>'; err(res); cb && cb(); return; }
+      S.orders = res.data.orders || [];
+      renderOrders();
+      paintBadges();
+      cb && cb();
+    }).catch(function (e) { say('无法连接服务：' + e, 'err'); cb && cb(); });
+  }
+  function loadLogs(cb) {
+    need('/ai/admin/logs').then(function (res) {
+      if (!res.data.ok) { err(res); cb && cb(); return; }
+      S.logs = res.data.logs || [];
+      renderLogs();
+      if (S.tab === 'dash') renderDash();
+      cb && cb();
+    });
+    need('/ai/admin/security').then(function (res) {
+      if (res.data.ok) { S.guard = res.data; S.adminFails = res.data.adminFails || []; renderLogs(); }
+      cb && cb();
     });
   }
+  function loadPaycodes(cb) {
+    need('/ai/admin/paycode/list').then(function (res) {
+      if (!res.data.ok) { err(res); cb && cb(); return; }
+      S.paycodes = res.data;
+      renderPay();
+      cb && cb();
+    });
+  }
+  function loadSettings(cb) {
+    loadOverview(function () { renderDash(); cb && cb(); });
+    loadLogs(function () {});
+  }
+  function paintBadges() {
+    var live = S.live || {};
+    $('navUsers').textContent = S.users.length ? S.users.length : Number(live.accounts || 0);
+    var pending = live.pendingOrders != null ? live.pendingOrders
+      : S.orders.filter(function (o) { return o.status === 'pending' || o.status === 'claimed'; }).length;
+    var el = $('navOrders');
+    el.textContent = pending;
+    el.className = 'pill' + (pending ? ' hot' : '');
+  }
 
-  var timer = null;
-  $("auto").addEventListener("change", function () {
-    if (timer) { clearInterval(timer); timer = null; }
-    if ($("auto").checked) { timer = setInterval(loadOrders, 15000); }
+  /* ---------------------------------------------------------- 实时轮询 */
+  function setLive(state, text) {
+    $('liveDot').className = 'dot' + (state === 'on' ? ' on' : (state === 'paused' ? ' warn' : ''));
+    $('liveText').textContent = text;
+  }
+  function poll() {
+    if (!S.key) { setLive('off', '等待密钥'); return; }
+    if (document.hidden) { setLive('paused', '已暂停（标签页未激活）'); return; }
+    if (S.busy) return;
+    S.busy = true;
+    api('/ai/admin/poll', {}).then(function (res) {
+      S.busy = false;
+      if (!res.data.ok) {
+        if (res.status === 403) { setLive('off', '密钥不正确'); }
+        return;
+      }
+      var d = res.data;
+      S.live = d;
+      setLive('on', fmtClock(d.ts));
+      $('syncText').textContent = '已同步 ' + fmtClock(d.ts);
+      var revEl = $('revText');
+      if (revEl) revEl.textContent = d.rev;
+      var syncEl = $('syncText2');
+      if (syncEl) syncEl.textContent = fmtClock(d.ts);
+      // 新订单提醒（只在真的变多时提醒一次）
+      if (S.lastPending >= 0 && d.pendingOrders > S.lastPending) {
+        say('有新的待处理订单（' + d.pendingOrders + ' 笔）', 'info');
+      }
+      S.lastPending = d.pendingOrders;
+      paintBadges();
+      if (S.rev !== -1 && d.rev !== S.rev) {
+        S.rev = d.rev;
+        loadTab(S.tab);
+      } else if (S.rev === -1) {
+        S.rev = d.rev;
+      }
+    }).catch(function () {
+      S.busy = false;
+      setLive('off', '连接中断，正在重试');
+    });
+  }
+  function refresh(force) {
+    if (!S.key) { needKey(true); return; }
+    loadTab(S.tab, function () { if (force) poll(); });
+  }
+
+  /* ---------------------------------------------------------- 绑定 */
+  $('refresh').addEventListener('click', function () { refresh(true); });
+  $('keyBtn').addEventListener('click', function () { needKey(true); });
+  $('save').addEventListener('click', function () {
+    S.key = $('key').value.trim();
+    try { localStorage.setItem(KEY_STORE, S.key); } catch (e) {}
+    $('key2').value = S.key;
+    if (!S.key) { say('已清空密钥', 'info'); return; }
+    say('密钥已保存在本浏览器', 'ok');
+    S.loaded = {}; S.rev = -1; S.lastPending = -1;
+    refresh(true);
   });
-
-  var utimer = null;
-  $("urefresh").addEventListener("click", loadUsers);
-  $("uq").addEventListener("input", renderUsers);
-  $("ncreate").addEventListener("click", createAccount);
-  $("uresetall").addEventListener("click", function () {
-    if (!confirm("把所有账号的「今日用量」清零？（累计调用数保留）")) return;
-    api("/ai/admin/reset", { all: true }).then(function (res) {
-      if (!res.data.ok) { showErr($("out"), res); return; }
-      $("out").textContent = "已重置全部账号的今日用量（" + (res.data.count || 0) + " 个账号）。";
-      loadUsers();
+  $('clear').addEventListener('click', function () {
+    S.key = ''; $('key').value = ''; $('key2').value = '';
+    try { localStorage.removeItem(KEY_STORE); } catch (e) {}
+    say('已清除本浏览器里的密钥', 'info');
+    setLive('off', '等待密钥');
+  });
+  $('uq').addEventListener('input', function () { S.q = $('uq').value; S.page = 1; renderUsers(); });
+  $('uSort').addEventListener('change', function () { S.sort = $('uSort').value; renderUsers(); });
+  $$('#uFilters .chip').forEach(function (c) {
+    c.addEventListener('click', function () {
+      S.filter = c.getAttribute('data-uf'); S.page = 1;
+      $$('#uFilters .chip').forEach(function (x) { x.classList.toggle('on', x === c); });
+      renderUsers();
     });
   });
-  $("uauto").addEventListener("change", function () {
-    if (utimer) { clearInterval(utimer); utimer = null; }
-    if ($("uauto").checked) { utimer = setInterval(loadUsers, 15000); }
+  $('ncreate').addEventListener('click', createAccount);
+  $('uresetall').addEventListener('click', function () { allReset(); });
+  $('resetAll2').addEventListener('click', function () { allReset(); });
+  function allReset() {
+    ask({
+      title: '全部重置今日用量',
+      body: '把所有账号的「今日用量」清零？\n（累计调用数保留，不可撤销）',
+      danger: true
+    }, function () {
+      api('/ai/admin/reset', { all: true }).then(function (res) {
+        if (!res.data.ok) return err(res);
+        after('已重置全部账号的今日用量（' + (res.data.count || 0) + ' 个账号）');
+      });
+    });
+  }
+  $$('[data-batch]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var k = b.getAttribute('data-batch');
+      if (k === 'clear') { S.sel = {}; renderUsers(); return; }
+      batch(k);
+    });
   });
-  $("save").addEventListener("click", loadUsers);
+  $('uExport').addEventListener('click', function () {
+    var list = filteredUsers();
+    var rows = [['用户名', '显示名', '用户ID', '状态', '档位', '注册时间', '最后登录', '最后IP',
+                 '今日免费', '今日会员', '今日不限量', '累计调用', '会员到期', '备注']];
+    list.forEach(function (u) {
+      rows.push([u.username, u.displayName, u.userId,
+        u.status === 'disabled' ? '已停用' : '正常',
+        u.free ? '免费不限量' : (u.member ? '会员' : '免费版'),
+        fmtTime(u.created || u.first), fmtTime(u.lastLogin || u.last), u.lastIP,
+        u.freeUsedToday, u.memberUsedToday, u.unlimitedUsedToday, u.totalCalls,
+        u.member ? fmtTime(u.memberUntil) : '', u.note]);
+    });
+    download('轻提词用户_' + todayStr() + '.csv', csv(rows));
+    say('已导出 ' + list.length + ' 个账号', 'ok');
+  });
+  $('oq').addEventListener('input', function () { S.oq = $('oq').value; renderOrders(); });
+  $$('#oFilters .chip').forEach(function (c) {
+    c.addEventListener('click', function () {
+      S.ofilter = c.getAttribute('data-of');
+      $$('#oFilters .chip').forEach(function (x) { x.classList.toggle('on', x === c); });
+      renderOrders();
+    });
+  });
+  $('oRefresh').addEventListener('click', function () { loadOrders(); });
+  $('oExport').addEventListener('click', function () {
+    var rows = [['订单号', '用户名', '套餐', '天数', '金额', '状态', '下单时间', '开通时间', '到期时间']];
+    filteredOrders().forEach(function (o) {
+      rows.push([o.id, o.name, o.planName || o.plan, o.days, Number(o.amount || 0).toFixed(2),
+        statusText(o.status), fmtTime(o.created), o.paidAt ? fmtTime(o.paidAt) : '',
+        o.memberUntil ? fmtTime(o.memberUntil) : '']);
+    });
+    download('轻提词订单_' + todayStr() + '.csv', csv(rows));
+    say('已导出 ' + filteredOrders().length + ' 笔订单', 'ok');
+  });
+  $('grant').addEventListener('click', function () {
+    var u = ($('uname').value || '').trim(), d = parseInt($('days').value, 10) || 0;
+    if (!u || d <= 0) { say('请填写用户名与天数', 'err'); return; }
+    ask({ title: '手工加天数', body: '给「' + u + '」加 ' + d + ' 天会员？' }, function () {
+      api('/ai/admin/grant', { username: u, days: d }).then(function (res) {
+        if (!res.data.ok) return err(res);
+        after('已给 ' + u + ' 加 ' + d + ' 天，会员到期 ' + fmtTime(res.data.memberUntil));
+      });
+    });
+  });
+  $('lookup').addEventListener('click', function () {
+    var u = ($('uname').value || '').trim();
+    if (!u) { say('请填写用户名', 'err'); return; }
+    api('/ai/admin/lookup', { username: u }).then(function (res) {
+      if (!res.data.ok) return err(res);
+      var q = res.data.quota || {};
+      say('用户：' + res.data.username + '（id=' + res.data.userId + '）\n' +
+        '会员到期：' + (q.memberUntil ? fmtTime(q.memberUntil) : '未开通') + '\n' +
+        '今日：免费 ' + q.freeUsedToday + '/' + q.freeQuota + ' 次，会员 ' + q.memberUsedToday + '/' +
+        q.memberCap + ' 次\n今日剩余：' + q.remainingToday + '，累计调用：' + q.totalCalls, 'ok');
+    });
+  });
+  $('logRefresh').addEventListener('click', function () { loadLogs(); });
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) { poll(); }
+  });
 
-  $("key").value = getKey();
-  if (getKey()) { loadOrders(); loadUsers(); }
+  /* ---------------------------------------------------------- 启动 */
+  (function init() {
+    try { S.key = localStorage.getItem(KEY_STORE) || ''; } catch (e) { S.key = ''; }
+    try {
+      var t = localStorage.getItem(THEME_STORE);
+      setTheme(t === 'dark' ? 'dark' : 'light');
+    } catch (e) { setTheme('light'); }
+    $('key').value = S.key;
+    $('key2').value = S.key;
+    $('verText').textContent = 'v' + VERSION;
+    $('out').textContent = '';
+    // 版本从服务端读（页面里那个 VERSION 只是连不上时的兜底）
+    fetch('/ai/health').then(function (r) { return r.json(); }).then(function (d) {
+      S.health = d || {};
+      if (S.health.version) $('verText').textContent = 'v' + S.health.version;
+      if (S.tab === 'settings') renderDash();
+    }).catch(function () {});
+    goto('dash');
+    setInterval(poll, POLL_MS);
+    if (S.key) { poll(); }
+    else { needKey(true); setLive('off', '等待密钥'); }
+  })();
 })();
 </script>
 </body>
@@ -1917,9 +3435,16 @@ class Handler(BaseHTTPRequestHandler):
     def _need_admin(self):
         key = self.headers.get("X-Admin-Key", "") or self._query().get("key", "")
         if not self.store.check_admin(key):
+            # 失败记录只进内存：被人拿错密钥猛刷时，也不能变成磁盘写入放大
+            self.store.admin_fail(self.client_address[0] if self.client_address else "")
             self._err("管理员密钥不正确", "admin_auth", 403)
             return False
         return True
+
+    def _audit(self, action, target="", detail=""):
+        """后台操作留痕：谁、什么时候、对谁做了什么（在 /admin 的「日志」页可见）。"""
+        self.store.audit(action, target=target, detail=detail,
+                         ip=self.client_address[0] if self.client_address else "")
 
     def log_message(self, *args):  # 静默，避免刷日志
         pass
@@ -2030,6 +3555,8 @@ class Handler(BaseHTTPRequestHandler):
             if err:
                 self._err(err, "not_found", 404)
                 return
+            self._audit("确认收款开通", oid, "%s ￥%s / %s 天"
+                        % (order.get("name"), order.get("amount"), order.get("days")))
             self._ok(order=order, memberUntil=order.get("memberUntil"))
             return
         if path == "/ai/admin/grant":
@@ -2046,6 +3573,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._err("没有找到用户「%s」的登录记录" % name, "not_found", 404)
                 return
             until = self.store.add_membership(uid, u.get("name"), days)
+            self._audit("手工加天数", u.get("name"), "%d 天" % days)
             self._ok(userId=uid, username=u.get("name"), memberUntil=int(until),
                      quota=self.store.quota_view(uid))
             return
@@ -2077,6 +3605,8 @@ class Handler(BaseHTTPRequestHandler):
             if body.get("all"):
                 n = self.store.reset_all_usage(zero_total=zero_total)
                 log("admin reset ALL usage zeroTotal=%s count=%d" % (zero_total, n))
+                self._audit("重置全部今日用量", "全部账号",
+                            "含累计" if zero_total else "仅今日")
                 self._ok(scope="all", count=n)
                 return
             name = (body.get("username") or "").strip()
@@ -2093,6 +3623,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             quota = self.store.reset_usage(uid, zero_total=zero_total)
             log("admin reset usage user=%s(%s) zeroTotal=%s" % (u.get("name"), uid, zero_total))
+            self._audit("重置用量", u.get("name"), "含累计" if zero_total else "仅今日")
             self._ok(userId=uid, username=u.get("name"), quota=quota)
             return
         if path == "/ai/admin/free":
@@ -2109,12 +3640,54 @@ class Handler(BaseHTTPRequestHandler):
                 return
             state = self.store.set_free(uid, u.get("name"), bool(body.get("on")))
             log("admin set free user=%s(%s) on=%s" % (u.get("name"), uid, state))
+            self._audit("开通免费不限量" if state else "取消免费不限量", u.get("name"))
             self._ok(
                 userId=uid,
                 username=u.get("name"),
                 free=state,
                 quota=self.store.quota_view(uid),
             )
+            return
+        # ---- 4.1.2 后台实时 / 概览 / 日志 / 安全 / 收款码 ----
+        if path == "/ai/admin/poll":
+            if not self._need_admin():
+                return
+            self._ok(**self.store.admin_poll())
+            return
+        if path == "/ai/admin/overview":
+            if not self._need_admin():
+                return
+            self._ok(
+                kpi=self.store.admin_kpi(),
+                series=self.store.stats_series(14),
+                topUsers=self.store.admin_top_users(8),
+                plans=list(PLANS.values()),
+            )
+            return
+        if path == "/ai/admin/logs":
+            if not self._need_admin():
+                return
+            self._ok(logs=list(self.store.admin_log))
+            return
+        if path == "/ai/admin/security":
+            if not self._need_admin():
+                return
+            self._ok(**self.store.admin_security())
+            return
+        if path == "/ai/admin/paycode/list":
+            if not self._need_admin():
+                return
+            self._ok(**self._paycode_admin_list())
+            return
+        if path == "/ai/admin/paycode/upload":
+            if not self._need_admin():
+                return
+            self._paycode_upload()
+            return
+        if path == "/ai/admin/paycode/delete":
+            if not self._need_admin():
+                return
+            self._paycode_delete()
             return
         # 预留：支付通道回调（通道到位后接这里自动开通，见 README）
         if path == "/ai/pay/notify":
@@ -2339,6 +3912,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._err(str(e), "bad_request", 400)
                 return
             log("后台新建账号：%s（%s）" % (acc.get("name"), acc.get("id")))
+            self._audit("新建账号", acc.get("name"), "id=%s" % acc.get("id"))
             self._ok(account=store.account_admin_view(acc))
             return
 
@@ -2355,6 +3929,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._err(str(e), "bad_request", 400)
                 return
             log("后台重置密码：%s（%s）" % (acc.get("name"), uid))
+            self._audit("重置密码", acc.get("name"), "已签发一次性临时密码")
             self._ok(username=acc.get("name"), tempPassword=temp)
             return
 
@@ -2363,17 +3938,20 @@ class Handler(BaseHTTPRequestHandler):
             acc = store.account_set_status(uid, want)
             log("后台%s账号：%s（%s）" % ("停用" if want == "disabled" else "启用",
                                      acc.get("name"), uid))
+            self._audit("停用账号" if want == "disabled" else "启用账号", acc.get("name"))
             self._ok(account=store.account_admin_view(acc))
             return
 
         if action == "kick":
             acc = store.account_bump_ver(uid)
             log("后台踢下线：%s（%s）" % (acc.get("name"), uid))
+            self._audit("踢下线", acc.get("name"), "凭证版本 -> %s" % acc.get("tokenVer"))
             self._ok(account=store.account_admin_view(acc))
             return
 
         if action == "note":
             acc = store.account_set_note(uid, body.get("note") or "")
+            self._audit("修改备注", acc.get("name"), (body.get("note") or "")[:60])
             self._ok(account=store.account_admin_view(acc))
             return
 
@@ -2490,11 +4068,106 @@ class Handler(BaseHTTPRequestHandler):
             body = f.read()
         self.send_response(200)
         self._cors()
-        self.send_header("Content-Type", "image/png")
+        # 按图片魔数给 Content-Type：后台允许传 JPG/WebP，写死 image/png 会让浏览器不认
+        self.send_header("Content-Type",
+                         AVATAR_EXTS.get(sniff_image_ext(body) or "png", "image/png"))
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    # ---- 4.1.2 后台：收款码在线管理（不用再 scp 图片到服务器）----
+    PAYCODE_MAX_BYTES = 4 * 1024 * 1024
+
+    def _paycode_admin_list(self):
+        d = self.store.dir
+        items = []
+        for plan in self.PAYCODE_PLANS:
+            for method in self.PAYCODE_METHODS:
+                fn = "paycode_%s_%s.png" % (plan, method)
+                p = os.path.join(d, fn)
+                info = {
+                    "plan": plan,
+                    "method": method,
+                    "file": fn,
+                    "url": "/ai/paycode/%s/%s.png" % (plan, method),
+                    "exists": os.path.isfile(p),
+                    "size": 0,
+                    "updated": 0,
+                }
+                if info["exists"]:
+                    try:
+                        st = os.stat(p)
+                        info["size"] = int(st.st_size)
+                        info["updated"] = int(st.st_mtime)
+                    except Exception:
+                        pass
+                items.append(info)
+        legacy = os.path.join(d, "paycode.png")
+        return {
+            "items": items,
+            "plans": list(self.PAYCODE_PLANS),
+            "methods": list(self.PAYCODE_METHODS),
+            "legacy": {"exists": os.path.isfile(legacy), "url": "/ai/paycode.png"},
+        }
+
+    def _paycode_upload(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+        except Exception:
+            length = 0
+        if length > self.PAYCODE_MAX_BYTES + 1024 * 1024:
+            self._drain(length)          # 先读掉再报错，避免浏览器只看到「网络错误」
+            self._err("图片太大（上限 4 MB）", "too_large", 400)
+            return
+        body = self._body()
+        plan = (body.get("plan") or "").strip()
+        method = (body.get("method") or "").strip()
+        if plan not in self.PAYCODE_PLANS or method not in self.PAYCODE_METHODS:
+            self._err("套餐或支付方式不对（plan=day|month，method=wechat|alipay）",
+                      "bad_request", 400)
+            return
+        data = _decode_data_url(body.get("data") or "")
+        if not data:
+            self._err("没有收到图片数据", "bad_request", 400)
+            return
+        if len(data) > self.PAYCODE_MAX_BYTES:
+            self._err("图片太大（上限 4 MB）", "too_large", 400)
+            return
+        if not sniff_image_ext(data):
+            self._err("只支持 PNG / JPG / WebP 图片", "bad_request", 400)
+            return
+        path = os.path.join(self.store.dir, "paycode_%s_%s.png" % (plan, method))
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, path)
+        except Exception as e:  # noqa: BLE001
+            self._err("写入失败：%s" % e, "io_error", 500)
+            return
+        self.store.bump_rev()
+        self._audit("上传收款码", "%s/%s" % (plan, method), "%d KB" % (len(data) // 1024))
+        log("后台上传收款码：%s/%s（%d 字节）" % (plan, method, len(data)))
+        self._ok(**self._paycode_admin_list())
+
+    def _paycode_delete(self):
+        body = self._body()
+        plan = (body.get("plan") or "").strip()
+        method = (body.get("method") or "").strip()
+        if plan not in self.PAYCODE_PLANS or method not in self.PAYCODE_METHODS:
+            self._err("套餐或支付方式不对", "bad_request", 400)
+            return
+        path = os.path.join(self.store.dir, "paycode_%s_%s.png" % (plan, method))
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+        except Exception as e:  # noqa: BLE001
+            self._err("删除失败：%s" % e, "io_error", 500)
+            return
+        self.store.bump_rev()
+        self._audit("删除收款码", "%s/%s" % (plan, method))
+        self._ok(**self._paycode_admin_list())
 
     def _paycodes_manifest(self):
         """告诉客户端有哪些收款码可用（客户端据此显示 微信/支付宝 切换）。"""
