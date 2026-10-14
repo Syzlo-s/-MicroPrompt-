@@ -435,12 +435,25 @@ def main():
               "用户与 AI 额度" in html and 'id="users"' in html
               and "/ai/admin/users" in html and "/ai/admin/reset" in html
               and "/ai/admin/free" in html and "免费不限量" in html, "")
-        # 面板是手写的 HTML+JS：JS 里 $("xxx") 引用的 id 必须真的存在，否则点按钮静默无效
+        # 4.1.2：INS 风重构后的后台 = 左侧导航 + 实时轮询 + 概览/收款码/日志页
+        check("页面是 4.1.2 的桌面控制台（左侧导航 + 实时轮询 + 概览看板）",
+              "/ai/admin/poll" in html and "/ai/admin/overview" in html
+              and "/ai/admin/logs" in html and "/ai/admin/paycode/upload" in html
+              and 'class="nav-item' in html and "近 14 天 AI 调用" in html, "")
+        # 面板是手写的 HTML+JS：JS 里 $("xxx") / $('xxx') 引用的 id 必须真的存在，
+        # 否则点按钮静默无效（4.1.2 起 JS 统一用单引号，所以两种引号都要认）
         ids_in_html = set(re.findall(r'id="([A-Za-z0-9_\-]+)"', html))
-        ids_in_js = set(re.findall(r'\$\("([A-Za-z0-9_\-]+)"\)', html))
+        ids_in_js = set(re.findall(r'\$\(' + r'["\']' + r'([A-Za-z0-9_\-]+)' + r'["\']' + r'\)',
+                                   html))
         missing_ids = sorted(ids_in_js - ids_in_html)
         check("面板 JS 引用的元素 id 都存在", bool(ids_in_js) and not missing_ids,
               "JS 引用 %d 个，缺失=%s" % (len(ids_in_js), missing_ids))
+        # 页面源文件与注入内容必须一致：改了 admin_ui.html 忘了注入 = 线上还是旧界面
+        r = subprocess.run([PY, os.path.normpath(os.path.join(HERE, "..", "sync_admin_page.py")),
+                            "--check"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        sync_out = (r.stdout or b"").decode("utf-8", "replace").strip().splitlines()
+        check("后台页面源文件 admin_ui.html 已注入 ai_server.py（没有忘同步）",
+              r.returncode == 0, sync_out[-1] if sync_out else "")
 
         # 16. 数据文件损坏时自动从备份恢复
         print("[16] 数据损坏：自动从最近备份恢复（会员不能凭空消失）")

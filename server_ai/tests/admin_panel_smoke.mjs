@@ -4,15 +4,19 @@
 //     1. 面板能加载、无 JS 异常、无 5xx
 //     2. 粘贴管理员密钥 → 用户列表出现（谁登录过 / 首次 / 最近 / 用量 / 累计 / 会员到期）
 //     3. 点「重置今日」「开通免费不限量」「取消免费」「全部重置今日用量」
-//        —— 逐个确认原生 confirm 文案，并核对**磁盘上的 data/*.json 真的变了**
+//        —— 逐个确认自绘确认弹窗的文案，并核对**磁盘上的 data/*.json 真的变了**
 //     3.5（4.1.0 新增）账号管理：重置密码 / 停用 / 启用 / 踢下线 / 备注 / 新建账号
 //        —— 除了核对磁盘 accounts.json，还会直接打 /api/login 验「临时密码真能登、旧密码真失效」
+//     3.8（4.1.2 新增）重构后的控制台：概览 KPI + 手写 SVG 趋势图 + 暗色模式 +
+//        2 秒实时轮询（外部下单 → 侧边栏徽标自动变）+ 详情抽屉 + 批量操作 +
+//        订单确认收款写盘 + 操作审计留痕 + 收款码在线上传/删除 + 布局体检（溢出/裁切/窄屏）
 //     4. 密钥填错时给出错误提示且不崩
 //
 // 依赖：Node >= 22（内置 fetch / WebSocket）+ 本机 Chrome 或 Edge；被测服务端只用标准库。
 // 用法（在 server_ai 目录下）：
 //     node tests/admin_panel_smoke.mjs          # 本地模式：自建临时服务端 + 种子数据，全过退出码 0
 //     MP_KEEP=1 node tests/admin_panel_smoke.mjs  # 保留临时目录便于排查
+//     MP_SHOT=D:\shots\p node tests/admin_panel_smoke.mjs  # 顺带把各页签截成 PNG（评审看设计）
 //     MP_PYTHON=python3.6 MP_CHROME=<路径> ...    # 指定解释器 / 浏览器
 //
 // 远程模式（部署后从本机验线上面板，只做只读检查，不会改任何真实账号数据）：
@@ -85,6 +89,7 @@ let PORT = null;
 let AUTH_PORT = null;      // 4.1.0 自建账号监听端口（客户端写死的 2580 的角色）
 let AUTH_ITERS = 2000;     // 与传给服务端的 MP_PBKDF2_ITERS 保持一致
 let ALICE_OLD_PWD = '';    // 种子里 alice 的旧密码，用来验「重置后旧密码失效」
+let aliceTempToken = '';   // 重置密码后拿临时密码登录到的令牌（后面下单/验实时要用）
 let logFd = null;
 let server = null;
 
@@ -204,6 +209,7 @@ const bFd = fs.openSync(path.join(WORK, 'browser.log'), 'a');
 const proc = spawn(browser, [
   '--headless=new', `--remote-debugging-port=${CDP_PORT}`, `--user-data-dir=${profile}`,
   '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-extensions',
+  '--window-size=1680,1050',
   '--disable-features=Translate', 'about:blank',
 ], { stdio: ['ignore', bFd, bFd] });
 
@@ -295,6 +301,27 @@ async function waitFor(expression, ms = 6000) {
 const panelText = () => ev(`(document.getElementById('users')||{}).innerText || ''`);
 const outText = () => ev(`(document.getElementById('out')||{}).textContent || ''`);
 
+/** 切页签（4.1.2 起后台是「左侧导航 + 多页签」的单页应用） */
+async function nav(tab) {
+  await ev(`(() => { const b = document.querySelector('.nav-item[data-tab=${JSON.stringify(tab)}]');
+                      if (b) b.click(); return !!b; })()`);
+  await sleep(300);
+}
+/** 点一个会弹确认的按钮：4.1.2 起改成自绘弹窗（不再用原生 confirm），所以要多点一次「确定」 */
+async function act(sel) {
+  await ev(`(document.querySelector(${JSON.stringify(sel)})||{click(){}}).click()`);
+  await waitFor(`document.getElementById('askModal').classList.contains('on')`, 2500);
+  const body = await ev(`document.getElementById('askBody').textContent || ''`);
+  await ev(`document.getElementById('askOk').click()`);
+  return body;
+}
+/** 截图（评审看设计用；MP_SHOT=<前缀> 时才会拍） */
+async function shot(name) {
+  const r = await cdp.send('Page.captureScreenshot', { format: 'png' });
+  fs.writeFileSync(name, Buffer.from(r.data, 'base64'));
+  console.log('  截图: ' + name);
+}
+
 /** 直接打自建账号服务验「临时密码/停用到底有没有真的生效」（面板只是外壳） */
 async function apiLogin(name, pwd) {
   try {
@@ -336,12 +363,15 @@ await ev(`(() => {
   document.getElementById('save').click();
   return 1;
 })()`);
+await sleep(400);
+// 4.1.2：用户列表在「用户与额度」页签里，先切过去（页签没激活时 innerText 是空的）
+await nav('users');
 let listed;
 if (REMOTE) {
-  // 线上数据不确定：只要能渲染出表格或「还没有用户登录记录」就算通过
+  // 线上数据不确定：只要能渲染出表格或空态就算通过
   listed = await waitFor(`(() => {
     const t = document.getElementById('users').innerText || '';
-    return t.includes('账号') || t.includes('还没有用户登录记录') || t.includes('没有匹配的用户');
+    return t.includes('账号') || t.includes('还没有任何账号') || t.includes('没有匹配的用户');
   })()`);
 } else {
   listed = await waitFor(`(document.getElementById('users').innerText || '').includes('alice')`);
@@ -353,10 +383,12 @@ if (REMOTE) {
   console.log('  线上面板摘要：' + text.replace(/\s+/g, ' ').slice(0, 180));
   check('线上面板不是报错状态（无「密钥不正确 / 无法连接服务」）',
     !/密钥不正确|无法连接服务|请先填写/.test(text));
-  check('线上面板已是 4.1.1 版本（表头带注册时间 / 最后登录 / 备注）',
+  check('线上面板已是新版（表头带注册时间 / 最后登录 / 备注）',
     text.includes('注册时间') && text.includes('最后登录') && text.includes('备注'));
   check('线上账号行有账号操作按钮（重置密码 / 备注 / 踢下线）',
-    /重置密码/.test(text) || /还没有用户登录记录/.test(text));
+    /重置密码/.test(text) || /还没有任何账号/.test(text));
+  check('线上面板带实时刷新状态点与 2 秒轮询接口',
+    (await ev(`!!document.getElementById('liveDot') && !!document.getElementById('syncText')`)) === true);
 } else {
   check('运营摘要：账号 3 个 / 免费不限量 1 个 / 今日 AI 调用 10 次',
     text.includes('账号 3 个') && text.includes('免费不限量 1 个') && text.includes('今日 AI 调用 10 次'),
@@ -371,11 +403,10 @@ if (REMOTE) {
 // ---------------------------------------------------------------- 3~5. 写操作（仅本地模式；远程模式绝不改真实数据）
 if (!REMOTE) {
   // 3. 重置某个账号「今日用量」
-  dialogs.length = 0;
-  await ev(`document.querySelector('button[data-reset="alice"]').click()`);
+  const rbody = await act('button[data-reset="alice"]');
   const resetOk = await waitFor(`(document.getElementById('users').innerText || '').includes('今日 AI 调用 8 次')`);
-  check('点「重置今日」弹出确认框', dialogs.length === 1, JSON.stringify(dialogs));
-  check('确认框文案带用户名', (dialogs[0] || '').includes('alice') && (dialogs[0] || '').includes('今日用量清零'), dialogs[0] || '');
+  check('点「重置今日」弹出确认弹窗（自绘，不是原生 confirm）', dialogs.length === 0, JSON.stringify(dialogs));
+  check('确认弹窗文案带用户名', rbody.includes('alice') && rbody.includes('今日用量清零'), rbody);
   check('重置后列表刷新（今日 AI 调用 10 → 8 次）', resetOk);
   let usage = readJson(path.join(DATA, 'usage.json'));
   check('磁盘 usage.json：alice 今日 free 归零', (usage['uid-alice'] || {}).free === 0, JSON.stringify(usage['uid-alice']));
@@ -383,21 +414,19 @@ if (!REMOTE) {
   check('磁盘 usage.json：其他人不受影响（carol.member 仍为 3）', (usage['uid-carol'] || {}).member === 3);
 
   // 4. 开通 / 取消「免费不限量」
-  dialogs.length = 0;
-  await ev(`document.querySelector('button[data-free="1"][data-name="alice"]').click()`);
+  const f1 = await act('button[data-free="1"][data-name="alice"]');
   const freeOn = await waitFor(`!!document.querySelector('button[data-free="0"][data-name="alice"]')`);
-  check('点「开通免费不限量」弹出确认框', dialogs.length === 1, JSON.stringify(dialogs));
-  check('确认框文案正确', (dialogs[0] || '').includes('开通免费不限量') && (dialogs[0] || '').includes('alice'), dialogs[0] || '');
+  check('点「开通免费不限量」弹出确认弹窗', dialogs.length === 0 && f1.includes('免费不限量'), f1);
+  check('确认弹窗文案带用户名', f1.includes('alice'), f1);
   check('开通后按钮变为「取消免费」', freeOn);
   text = await panelText();
   check('开通后摘要：免费不限量 1 → 2 个', text.includes('免费不限量 2 个'));
   let free = readJson(path.join(DATA, 'free.json'));
   check('磁盘 free.json：alice.on = true', (free['uid-alice'] || {}).on === true, JSON.stringify(free['uid-alice']));
 
-  dialogs.length = 0;
-  await ev(`document.querySelector('button[data-free="0"][data-name="alice"]').click()`);
+  const f2 = await act('button[data-free="0"][data-name="alice"]');
   const freeOff = await waitFor(`!!document.querySelector('button[data-free="1"][data-name="alice"]')`);
-  check('点「取消免费」弹出确认框', dialogs.length === 1, JSON.stringify(dialogs));
+  check('点「取消免费」弹出确认弹窗', dialogs.length === 0 && f2.includes('取消'), f2);
   check('取消后按钮变回「开通免费不限量」', freeOff);
   free = readJson(path.join(DATA, 'free.json'));
   check('磁盘 free.json：alice 已移除（取消 = 删条目，is_free 视为关闭）', !free['uid-alice'],
@@ -405,11 +434,10 @@ if (!REMOTE) {
   check('磁盘 free.json：bob 仍然保留', (free['uid-bob'] || {}).on === true);
 
   // 5. 全部重置「今日用量」
-  dialogs.length = 0;
-  await ev(`document.getElementById('uresetall').click()`);
+  const abody = await act('#uresetall');
   const allReset = await waitFor(`(document.getElementById('out').textContent || '').includes('已重置全部账号')`);
-  check('点「全部重置今日用量」弹出确认框', dialogs.length === 1, JSON.stringify(dialogs));
-  check('确认框文案说明累计会保留', (dialogs[0] || '').includes('累计调用数保留'), dialogs[0] || '');
+  check('点「全部重置今日用量」弹出确认弹窗', dialogs.length === 0, JSON.stringify(dialogs));
+  check('确认弹窗文案说明累计会保留', abody.includes('累计调用数保留'), abody);
   check('操作结果提示出现', allReset, await outText());
   usage = readJson(path.join(DATA, 'usage.json'));
   const allZero = ['uid-alice', 'uid-bob', 'uid-carol'].every((k) => {
@@ -439,11 +467,10 @@ if (!REMOTE) {
   check('重置前：alice 的旧密码本来可以登录（自建账号服务确实在跑）', before.ok, before.desc);
 
   // 重置密码
-  dialogs.length = 0;
-  await ev(`document.querySelector('button[data-pwd="alice"]').click()`);
+  const pbody = await act('button[data-pwd="alice"]');
   const pwdDone = await waitFor(`(document.getElementById('out').textContent||'').includes('临时密码')`);
-  check('点「重置密码」弹出确认框且文案说明旧令牌会失效',
-    dialogs.length === 1 && (dialogs[0] || '').includes('旧令牌会立刻失效'), dialogs[0] || '');
+  check('点「重置密码」弹出确认弹窗且文案说明旧令牌会失效',
+    dialogs.length === 0 && pbody.includes('旧令牌会立刻失效'), pbody);
   const temp = ((await outText()).match(/临时密码：(\S+)/) || [])[1] || '';
   check('面板把一次性临时密码显示出来（10 位）', pwdDone && temp.length === 10,
     (await outText()).replace(/\s+/g, ' ').slice(0, 90));
@@ -452,6 +479,7 @@ if (!REMOTE) {
     (acc['uid-alice'] || {}).pwd !== aliceHashBefore && (acc['uid-alice'] || {}).tokenVer === 2);
   const withTemp = await apiLogin('alice', temp);
   const withOld = await apiLogin('alice', ALICE_OLD_PWD);
+  aliceTempToken = withTemp.token;
   check('临时密码可以真的登录', withTemp.ok, withTemp.desc);
   check('旧密码已失效（重置不是只改了页面）', !withOld.ok, withOld.desc);
   const accView = await apiGetAccount(withTemp.token);
@@ -460,11 +488,10 @@ if (!REMOTE) {
     JSON.stringify(accView).slice(0, 120));
 
   // 停用 / 启用
-  dialogs.length = 0;
-  await ev(`document.querySelector('button[data-status="disabled"][data-name="bob"]').click()`);
+  const sbody = await act('button[data-status="disabled"][data-name="bob"]');
   const bobOff = await waitFor(`!!document.querySelector('button[data-status="active"][data-name="bob"]')`);
-  check('点「停用」弹出确认框且文案说明将无法登录',
-    dialogs.length === 1 && (dialogs[0] || '').includes('无法登录'), dialogs[0] || '');
+  check('点「停用」弹出确认弹窗且文案说明将无法登录',
+    dialogs.length === 0 && sbody.includes('无法登录'), sbody);
   check('停用后按钮变成「启用」', bobOff);
   acc = readJson(path.join(DATA, 'accounts.json'));
   check('磁盘 accounts.json：bob.status = disabled 且 tokenVer 1 → 2',
@@ -473,31 +500,30 @@ if (!REMOTE) {
   const bobOffLogin = await apiLogin('bob', 'bob-password-1');
   check('停用后 bob 即使密码正确也登不上，且提示「已停用」',
     !bobOffLogin.ok && /停用/.test(bobOffLogin.desc), bobOffLogin.desc);
-  dialogs.length = 0;
-  await ev(`document.querySelector('button[data-status="active"][data-name="bob"]').click()`);
+  await act('button[data-status="active"][data-name="bob"]');
   await waitFor(`!!document.querySelector('button[data-status="disabled"][data-name="bob"]')`);
   check('启用后 bob 可以重新登录', (await apiLogin('bob', 'bob-password-1')).ok);
 
   // 踢下线
   const verBefore = (readJson(path.join(DATA, 'accounts.json'))['uid-bob'] || {}).tokenVer || 0;
-  dialogs.length = 0;
-  await ev(`document.querySelector('button[data-kick="bob"]').click()`);
+  const kbody = await act('button[data-kick="bob"]');
   const kicked = await waitFor(`(document.getElementById('out').textContent||'').includes('踢下线')`);
-  check('点「踢下线」弹出确认框且文案说明密码不变',
-    dialogs.length === 1 && (dialogs[0] || '').includes('密码不变'), dialogs[0] || '');
+  check('点「踢下线」弹出确认弹窗且文案说明密码不变',
+    dialogs.length === 0 && kbody.includes('密码不变'), kbody);
   acc = readJson(path.join(DATA, 'accounts.json'));
   check('磁盘 accounts.json：踢下线只把 tokenVer +1（状态仍为 active）',
     kicked && (acc['uid-bob'] || {}).tokenVer === verBefore + 1
     && (acc['uid-bob'] || {}).status === 'active', JSON.stringify(acc['uid-bob']).slice(0, 120));
 
-  // 备注（prompt）
-  nextPromptText = 'VIP 客户';
-  dialogs.length = 0;
+  // 备注（4.1.2 起用自绘弹窗 + 多行输入框，不再用原生 prompt）
   await ev(`document.querySelector('button[data-note="bob"]').click()`);
+  const noteModal = await waitFor(`document.getElementById('askModal').classList.contains('on')`);
+  await ev(`(() => { const i = document.getElementById('askInput'); i.value = 'VIP 客户'; return 1; })()`);
+  await ev(`document.getElementById('askOk').click()`);
   const noteOk = await waitFor(`(document.getElementById('out').textContent||'').includes('备注')`);
   acc = readJson(path.join(DATA, 'accounts.json'));
-  check('点「备注」用 prompt 收集内容并写盘（仅内部可见）',
-    noteOk && (acc['uid-bob'] || {}).note === 'VIP 客户',
+  check('点「备注」用自绘弹窗收集内容并写盘（仅内部可见）',
+    noteModal && noteOk && (acc['uid-bob'] || {}).note === 'VIP 客户',
     'note=' + JSON.stringify((acc['uid-bob'] || {}).note));
 
   // 新建账号
@@ -506,22 +532,21 @@ if (!REMOTE) {
     document.getElementById('npwd').value = 'dave-password';
     return 1;
   })()`);
-  dialogs.length = 0;
-  await ev(`document.getElementById('ncreate').click()`);
+  const nbody = await act('#ncreate');
   const created = await waitFor(`(document.getElementById('out').textContent||'').includes('已新建账号')`);
   const daveAcc = Object.values(readJson(path.join(DATA, 'accounts.json')) || {})
     .find((a) => a.name === 'dave') || {};
   check('面板「新建账号」写盘成功且 uid 是自动生成的 UUID',
-    created && /^[0-9a-f-]{36}$/.test(daveAcc.id || ''), JSON.stringify(daveAcc).slice(0, 120));
+    created && nbody.includes('dave') && /^[0-9a-f-]{36}$/.test(daveAcc.id || ''),
+    JSON.stringify(daveAcc).slice(0, 120));
   check('新建的账号可以立刻登录', (await apiLogin('dave', 'dave-password')).ok);
-  dialogs.length = 0;
   await ev(`(() => {
     document.getElementById('nname').value = 'dave';
     document.getElementById('npwd').value = 'dave-password';
     return 1;
   })()`);
   badRequestExpected = true;
-  await ev(`document.getElementById('ncreate').click()`);
+  await act('#ncreate');
   check('重名新建被拒且提示原因',
     await waitFor(`(document.getElementById('out').textContent||'').includes('已被注册')`),
     (await outText()).replace(/\s+/g, ' ').slice(0, 90));
@@ -529,8 +554,193 @@ if (!REMOTE) {
   badRequestExpected = false;
 }
 
+// ------------------------------------------------ 5.8 4.1.2 新界面：概览 / 实时 / 抽屉 / 批量 / 订单 / 日志 / 收款码
+// 这一段专门验「重构后的界面真的能用」：数据是不是自己刷新、按钮是不是真的写盘
+if (!REMOTE) {
+  // 概览页
+  await nav('dash');
+  const kpiOk = await waitFor(`document.querySelectorAll('#kpiRow .kpi').length === 4`);
+  const ktext = await ev(`(document.getElementById('kpiRow').innerText||'')`);
+  check('概览页 4 张 KPI 卡片（账号总数 / 今日 AI 调用 / 待处理订单 / 今日收入）',
+    kpiOk && ktext.includes('账号总数') && ktext.includes('今日 AI 调用') && ktext.includes('今日收入'),
+    ktext.replace(/\s+/g, ' ').slice(0, 90));
+  check('概览页手写 SVG 趋势图渲染（折线 + 数据点）',
+    (await ev(`document.querySelectorAll('#chart svg.chart polyline').length === 1 &&
+               document.querySelectorAll('#chart svg circle').length >= 1`)) === true);
+  check('概览页额度分布条渲染 4 档',
+    (await ev(`document.querySelectorAll('#dist .bar').length === 4`)) === true);
+  check('概览页有「最近操作」与「调用最多的账号」两块',
+    (await ev(`!!document.getElementById('recentLogs') && !!document.getElementById('topUsers')`)) === true);
+
+  // 暗色模式
+  await ev(`document.getElementById('themeBtn').click()`);
+  const dark = await ev(`document.documentElement.getAttribute('data-theme')`);
+  await ev(`document.getElementById('themeBtn').click()`);
+  const light = await ev(`document.documentElement.getAttribute('data-theme')`);
+  check('INS 风暗色模式可切换（light ↔ dark）', dark === 'dark' && light === 'light', dark + ' → ' + light);
+
+  // 实时轮询：状态点 + 同步时间
+  const liveOn = await waitFor(`document.getElementById('liveDot').className.includes('on')`, 9000);
+  const syncTxt = await ev(`(document.getElementById('syncText').textContent||'')`);
+  check('2 秒实时轮询在跑（状态点变绿 + 显示同步时间）',
+    liveOn && /\d\d:\d\d:\d\d/.test(syncTxt), syncTxt);
+
+  // 详情抽屉
+  await nav('users');
+  await ev(`document.querySelector('tr[data-row="alice"]').click()`);
+  const drawerOn = await waitFor(`document.getElementById('drawer').classList.contains('on')`);
+  const dtext = await ev(`(document.getElementById('dBody').innerText||'')`);
+  check('点账号行打开详情抽屉（含最后 IP / 凭证版本 / 累计调用）',
+    drawerOn && dtext.includes('凭证版本') && dtext.includes('累计调用') && dtext.includes('最后 IP'),
+    dtext.replace(/\s+/g, ' ').slice(0, 90));
+  await ev(`document.getElementById('dClose').click()`);
+  check('抽屉可关闭', (await ev(`document.getElementById('drawer').classList.contains('on')`)) === false);
+
+  // 多选批量操作
+  await ev(`document.querySelector('input[data-check="bob"]').click()`);
+  await ev(`document.querySelector('input[data-check="carol"]').click()`);
+  const selOn = await waitFor(`document.getElementById('selbar').classList.contains('on') &&
+                               (document.getElementById('selCount').textContent||'') === '2'`);
+  check('勾选两个账号后出现批量操作条', selOn,
+    await ev(`document.getElementById('selCount').textContent`));
+  await act('button[data-batch="reset"]');
+  const batchOk = await waitFor(`(document.getElementById('out').textContent||'').includes('批量重置今日用量完成')`, 9000);
+  check('批量重置今日用量执行成功（成功 2 个）',
+    batchOk && (await outText()).includes('成功 2 个'), await outText());
+
+  // 客户端下单 → 侧边栏徽标实时变化 → 订单页确认收款开通
+  const ores = await fetch(`http://127.0.0.1:${PORT}/ai/order`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + aliceTempToken },
+    body: JSON.stringify({ plan: 'day' }),
+  }).then((r) => r.json()).catch(() => ({}));
+  const oid = ((ores.order || {}).id) || '';
+  check('客户端下单成功（用于验实时刷新与订单页）', !!oid, JSON.stringify(ores).slice(0, 120));
+  const badge = await waitFor(`(document.getElementById('navOrders').textContent||'').trim() === '1'`, 9000);
+  check('实时：外部下单后侧边栏「订单」待处理徽标自动变 1', badge,
+    await ev(`document.getElementById('navOrders').textContent`));
+  await nav('orders');
+  const orderShown = await waitFor(
+    `(document.getElementById('orderList').innerText||'').includes(${JSON.stringify(oid)})`, 8000);
+  check('订单页列出这笔新订单（待付款 + 订单号）', orderShown);
+  check('订单页有状态筛选与搜索框（4.1.2 新增）',
+    (await ev(`document.querySelectorAll('#oFilters .chip').length === 4 && !!document.getElementById('oq')`)) === true);
+  const cbody = await act(`button[data-confirm="${oid}"]`);
+  check('点「确认收款并开通」弹出确认弹窗且文案带订单号', cbody.includes(oid), cbody.slice(0, 70));
+  const confirmed = await waitFor(`(document.getElementById('out').textContent||'').includes('已开通')`, 9000);
+  const odisk = readJson(path.join(DATA, 'orders.json')) || {};
+  check('确认收款后写盘：订单 paid + alice 成为会员',
+    confirmed && (odisk[oid] || {}).status === 'paid'
+    && !!readJson(path.join(DATA, 'members.json'))['uid-alice'],
+    JSON.stringify(odisk[oid] || {}).slice(0, 120));
+
+  // 操作日志留痕
+  await nav('logs');
+  const logShown = await waitFor(`(document.getElementById('logList').innerText||'').includes('确认收款开通')`, 8000);
+  const logDisk = readJson(path.join(DATA, 'admin_log.json')) || {};
+  check('操作日志页出现「确认收款开通」留痕（后台每次操作都记）',
+    logShown && Array.isArray(logDisk.items) && logDisk.items.length > 0,
+    '磁盘 ' + ((logDisk.items || []).length) + ' 条');
+  check('日志页带登录锁定记录与后台密钥错误两块',
+    (await ev(`!!document.getElementById('guardList') && !!document.getElementById('failList')`)) === true);
+
+  // 收款码在线管理：上传 → 页面自动出现预览；删除 → 自动消失
+  await nav('pay');
+  await waitFor(`document.querySelectorAll('#pcWrap .pc').length === 4`, 6000);
+  // 注意：Buffer.from(字符串) 默认按 utf8 编码，\x89 会变成两个字节、魔数就废了，
+  // 所以这里必须用字节数组拼（服务端只认文件头魔数）
+  const pngData = 'data:image/png;base64,' + Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.alloc(60),
+  ]).toString('base64');
+  const upRes = await fetch(`http://127.0.0.1:${PORT}/ai/admin/paycode/upload`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Admin-Key': ADMIN_KEY },
+    body: JSON.stringify({ plan: 'month', method: 'wechat', data: pngData }),
+  }).then((r) => r.json()).catch((e) => ({ ok: false, error: String(e) }));
+  check('收款码上传接口返回 ok', upRes.ok === true, JSON.stringify(upRes).slice(0, 120));
+  const pcShown = await waitFor(`document.querySelectorAll('#pcWrap img').length >= 1`, 9000);
+  check('收款码在线上传后页面自动出现预览（不再需要 scp）',
+    pcShown && fs.existsSync(path.join(DATA, 'paycode_month_wechat.png')));
+  await fetch(`http://127.0.0.1:${PORT}/ai/admin/paycode/delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Admin-Key': ADMIN_KEY },
+    body: JSON.stringify({ plan: 'month', method: 'wechat' }),
+  }).then((r) => r.json());
+  const pcGone = await waitFor(`document.querySelectorAll('#pcWrap img').length === 0`, 9000);
+  check('收款码删除后页面自动去掉预览',
+    pcGone && !fs.existsSync(path.join(DATA, 'paycode_month_wechat.png')));
+
+  check('导出 CSV 按钮存在（用户 / 订单）',
+    (await ev(`!!document.getElementById('uExport') && !!document.getElementById('oExport')`)) === true);
+  check('不再使用原生 confirm / prompt（全部换成自绘弹窗）', dialogs.length === 0, JSON.stringify(dialogs));
+
+  // 布局体检：界面重构成「左侧导航 + 卡片 + 宽表格」后，最容易出的问题是溢出和挤压
+  // 注意：隐藏的页签（display:none）尺寸全是 0，所以要在对应页签可见时分别量
+  await nav('dash');
+  const dashBox = await ev(`(() => {
+    const cards = Array.from(document.querySelectorAll('#kpiRow .card'));
+    return {
+      scrollW: document.documentElement.scrollWidth,
+      innerW: window.innerWidth,
+      sideW: Math.round(document.querySelector('.side').getBoundingClientRect().width),
+      mainW: Math.round(document.querySelector('main').getBoundingClientRect().width),
+      minCardW: Math.min.apply(null, cards.map((c) => Math.round(c.getBoundingClientRect().width))),
+      cardTop: cards.map((c) => Math.round(c.getBoundingClientRect().top)),
+    };
+  })()`);
+  check('桌面宽度下页面没有横向溢出（scrollWidth <= innerWidth）',
+    dashBox.scrollW <= dashBox.innerW + 1, JSON.stringify([dashBox.scrollW, dashBox.innerW]));
+  check('左侧导航 200~280px、主区足够宽（≥900px）',
+    dashBox.sideW >= 200 && dashBox.sideW <= 280 && dashBox.mainW >= 900,
+    `side=${dashBox.sideW} main=${dashBox.mainW}`);
+  check('概览 KPI 卡片一行 4 张（每张 ≥240px）',
+    dashBox.cardTop.length === 4 && new Set(dashBox.cardTop).size === 1 && dashBox.minCardW >= 240,
+    `minW=${dashBox.minCardW} top=${JSON.stringify(dashBox.cardTop)}`);
+  await nav('users');
+  const tableOver = await ev(`(() => {
+    const w = document.getElementById('users');       // 它自己就是 .tblwrap（横向滚动容器）
+    const t = document.querySelector('#users table');
+    return (t && w) ? (t.scrollWidth - w.clientWidth) : -1;
+  })()`);
+  check('用户表 10 列在桌面宽度下不被裁切（表宽 <= 容器宽）',
+    tableOver >= 0 && tableOver <= 8, 'overflow=' + tableOver);
+  const lightCard = await ev(`getComputedStyle(document.documentElement).getPropertyValue('--card').trim()`);
+  await ev(`document.getElementById('themeBtn').click()`);
+  const darkCard = await ev(`getComputedStyle(document.documentElement).getPropertyValue('--card').trim()`);
+  await ev(`document.getElementById('themeBtn').click()`);
+  check('明暗两套配色确实生效（--card 亮 #ffffff / 暗 #121212）',
+    lightCard === '#ffffff' && darkCard === '#121212', lightCard + ' / ' + darkCard);
+  // 窄屏（手机应急确认收款）也要不炸
+  await cdp.send('Emulation.setDeviceMetricsOverride',
+    { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+  await sleep(500);
+  const mobile = await ev(`({ scrollW: document.documentElement.scrollWidth,
+                              innerW: window.innerWidth,
+                              nav: getComputedStyle(document.querySelector('.side')).position })`);
+  await cdp.send('Emulation.clearDeviceMetricsOverride');
+  await sleep(300);
+  check('窄屏（390px）下没有横向溢出、导航改为顶部横排',
+    mobile.scrollW <= mobile.innerW + 1 && mobile.nav === 'static',
+    JSON.stringify(mobile));
+
+  // 评审看设计用：MP_SHOT=<前缀> 时把各页签拍成 PNG
+  if (process.env.MP_SHOT) {
+    const p = process.env.MP_SHOT;
+    await nav('dash'); await sleep(900); await shot(p + '_dash.png');
+    await nav('users'); await sleep(900); await shot(p + '_users.png');
+    await nav('orders'); await sleep(900); await shot(p + '_orders.png');
+    await nav('logs'); await sleep(800); await shot(p + '_logs.png');
+    await ev(`document.getElementById('themeBtn').click()`);
+    await nav('dash'); await sleep(1000); await shot(p + '_dash_dark.png');
+    await ev(`document.getElementById('themeBtn').click()`);
+  }
+}
+
 // ---------------------------------------------------------------- 6. 密钥填错
+await nav('users');
 dialogs.length = 0;
+// 密钥填错会持续产生 403（实时轮询每 2 秒一次），所以这里一直保留豁免到最后
 authErrorExpected = true;
 await ev(`(() => {
   document.getElementById('key').value = 'wrong-key';
@@ -539,7 +749,6 @@ await ev(`(() => {
 })()`);
 const errShown = await waitFor(`(() => { const t = document.getElementById('users').innerText || ''; return t.includes('密钥') || t.includes('无法') || t.includes('错误') || t.includes('403'); })()`);
 check('密钥填错时给出错误提示（不白屏、不崩）', errShown, (await panelText()).replace(/\s+/g, ' ').slice(0, 80));
-authErrorExpected = false;
 
 // ---------------------------------------------------------------- 7. 运行期健康度
 check('没有未捕获的 JS 异常 / console.error', exceptions.length === 0, exceptions.slice(0, 2).join(' | '));
