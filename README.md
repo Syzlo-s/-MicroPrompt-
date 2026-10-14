@@ -5,7 +5,7 @@ Tauri 2 + React 19 + TypeScript + Vite 桌面速记应用（Web 技术栈迁移�
 ## 🚀 10 分钟极速复现指南（评审快速上手）
 
 > 目标：从零到「窗口打开、能写笔记、能注册登录」**不超过 10 分钟**。
-> 下列命令均在 **Windows 10/11 x64 + PowerShell** 实测通过（v4.1.1，2026-10-14）。
+> 下列命令均在 **Windows 10/11 x64 + PowerShell** 实测通过（客户端 v4.1.1 / 服务端 v4.1.2，2026-10-14）。
 
 ### 0. 前置环境（约 3 分钟）
 
@@ -66,13 +66,19 @@ $env:MP_MOCK='1'           # 没有 DeepSeek Key 时用 mock，AI 返回假数�
 python ai_server.py        # 主服务 2581；账号接口额外监听 2580
 ```
 
+启动后浏览器打开 **<http://127.0.0.1:2581/admin>**，粘贴管理员密钥
+（`python server_ai/admin_cli.py key` 打印；本地默认会自动生成到 `server_ai/data/admin_key.txt`），
+就能看到 4.1.2 重构成电脑端控制台的运营后台：概览 KPI 与趋势图、用户与额度、订单、收款码、
+操作日志与安全、设置；数据变了页面 2 秒内自己刷新（不用点刷新按钮）。
+
 ### 5. 30 秒自检（怎么算复现成功）
 
 - [ ] 窗口打开，顶栏显示「轻提词」，左侧笔记列表可新建/切换
 - [ ] 在编辑器输入文字后，`%APPDATA%\DesktopNotesDev\DesktopNotes\notes.json` 里能看到内容
-- [ ] `curl http://127.0.0.1:2581/ai/health` 返回 `{"ok": true, "service": "microprompt-ai", ...}`
+- [ ] `curl http://127.0.0.1:2581/ai/health` 返回 `{"ok": true, "service": "microprompt-ai", "version": "4.1.2", ...}`
 - [ ] `python server_ai/selfcheck.py` 全项 `[OK]`
 - [ ] 登录页注册一个账号 → 立刻登录成功（账号密码只存 PBKDF2 哈希）
+- [ ] 后台 `/admin` 能打开：概览页 4 张 KPI 卡片 + 趋势图，右上角状态点是绿的（表示每 2 秒在同步）
 
 ### 6. 打包成 exe（可选）
 
@@ -89,7 +95,7 @@ npm run tauri build                        # 产物：<target>\release\microprom
 | 窗口打开但报 `ERR_CONNECTION_REFUSED` | 用 `cargo build` 时漏了 `--features tauri/custom-protocol`，exe 去连 devUrl | 加该 feature，或直接用 `npm run tauri dev` |
 | 提示缺少 `WebView2Loader.dll` | Tauri 运行时 DLL 没随 exe 一起拷 | 与 exe 放同一目录（`build.ps1` 会自动复制） |
 | 登录报「无法连接服务器」 | 账号服务（2580）没起来 | 确认服务端 `MP_AUTH_MODE=builtin` 且 2580 在监听 |
-| 打包出的包"能装能开但登录凭据为空" | `.env` 缺失或没填 | 构建前先跑 `npm run preflight`（会一次性核对凭据与 7 处版本号） |
+| 打包出的包"能装能开但登录凭据为空" | `.env` 缺失或没填 | 构建前先跑 `npm run preflight`（会一次性核对凭据与 6 处客户端版本号） |
 
 ## 技术栈
 
@@ -191,10 +197,13 @@ cargo build --release --features tauri/custom-protocol --manifest-path src-tauri
 npm run build:checked
 
 # ⚠️ setup.iss 必须保存为「UTF-8 with BOM」，否则中文(应用名/输出文件名)会变乱码
-# ⚠️ 改版本号要同步这 7 处：package.json、src-tauri\tauri.conf.json、src-tauri\Cargo.toml、
+# ⚠️ 改客户端版本号要同步这 6 处：package.json、src-tauri\tauri.conf.json、src-tauri\Cargo.toml、
 #    src-tauri\inno\setup.iss（版本+输出文件名）、src\components\SettingsDialog.tsx（关于页）、
-#    src\components\WelcomeScreen.tsx（欢迎页）、server_ai\ai_server.py（/ai/health 上报的版本）
-#    —— `npm run preflight` 会一次性核对这 7 处
+#    src\components\WelcomeScreen.tsx（欢迎页）
+#    —— `npm run preflight` 会一次性核对这 6 处
+# ℹ️ 服务端（server_ai\ai_server.py 的 VERSION）是**独立**版本号：服务端可以单独发版
+#    （例如 4.1.2 只重构了后台与接口，桌面端仍是 4.1.1、用户不用重装）。
+#    preflight 只要求它「不落后于客户端」，不要求相等。
 #
 # ℹ️ 4.1.1 实况（两条路线并存，别再搞混）：
 #    实际发布的 `轻提词安装包_v4.1.1.exe` 是 `npm run tauri build`（NSIS，见 tauri.conf.json
@@ -299,17 +308,25 @@ npm run build:checked
 - [x] **Phase 4（P2）AI 提示词优化助手**：已上线并纳入计费 —— 悬浮按钮 / 右键双入口、
   结果放只读方框不覆盖原文、自动标题、逐段生成 + 逐行变清晰、上游失败自动退额度
   —— 但**走自建中转的 DeepSeek 单厂商**，`AiProvider` 多厂商抽象未做
-- [x] **Phase 5 的前半：发布工程化**：`preflight`（凭据 + 7 处版本号 + BOM + 线上版本）、
+- [x] **Phase 5 的前半：发布工程化**：`preflight`（凭据 + 6 处客户端版本号 + 服务端独立版本 + BOM + 线上版本）、
   `build.ps1`、Inno / NSIS 双路线、`SHA256SUMS.txt`、便携包与安装包
+- [x] **Phase 6（服务端 4.1.2）运营后台重构**：`/admin` 从「单页表格」改成**电脑端控制台**
+  （左侧导航 + 概览看板 + 用户/订单/收款码/日志安全/设置六个页签、暗色模式、详情抽屉、批量操作、
+  CSV 导出）；新增 2 秒实时刷新（`rev` 修订号 + `/ai/admin/poll`，数据没变不重画）、
+  每日统计 `stats.json`（近 14 天趋势与月收入）、操作审计 `admin_log.json`、
+  登录锁定与密钥错误安全视图、收款码在线上传；界面源文件 `admin_ui.html` 用
+  `sync_admin_page.py` 注入，仍是单文件部署
 - [ ] Phase 5（P3）**剩余部分**：CI 自动构建、增量更新、代码签名 —— **均未做**，目前发版全靠手工
 
-## 已知限制（v4.1.1 · 2026-10-14 核对）
+## 已知限制（客户端 v4.1.1 / 服务端 v4.1.2 · 2026-10-14 核对）
 
 **界面 / 交互**
 
 - **启动与退出动画未实现** —— 这是 Phase 2 唯一的遗留项，其余动效都已完成
 - 窗口边缘缩放依赖 Tauri 原生无边框窗口行为（`resizable: true` + `decorations: false`）
 - 列表 / 编辑器滚动条空闲淡出是两级透明度切换，不是 200ms 平滑过渡
+- 后台实时刷新是 **2 秒轮询**（不是 SSE / WebSocket）：延迟最多 2 秒，
+  换来的是零额外依赖、断线自愈（下一次轮询就恢复）；页签切到后台时暂停轮询省流量
 
 **功能缺口**
 
@@ -328,3 +345,13 @@ npm run build:checked
 - 安装包有 **Inno 与 NSIS 两条路线**并存（见「构建发布」末尾说明），改版本号时两条都要同步
 - 服务端是**单机单进程**部署（2580/2581 同一个 `ai_server.py`），无多实例 / 负载均衡；
   `MP_AUTH_MODE=casdoor` 的回退开关仍保留
+
+**安全（已知短板，别当成没有）**
+
+- **后台与账号接口目前是 http 明文**（`http://8.163.51.216:2581/admin`、`:2580`）：
+  管理员密钥和用户密码都走明文，同网络的人可以抓包看到。真实修法是给服务器配域名 +
+  Caddy 自动 HTTPS，或者只在需要时用 SSH 隧道把端口映射到本机：
+  `ssh -L 2581:127.0.0.1:2581 admin@8.163.51.216`，然后访问 `http://127.0.0.1:2581/admin`
+- 后台**和 AI 接口共用 2581 端口**，所以没法只对后台单独做 IP 白名单；
+  要隔离就得把后台拆到另一个端口（尚未做）
+- 管理员密钥错误只记在内存（最多 50 条，重启即清），刻意不落盘 —— 防止被人刷日志把磁盘写满

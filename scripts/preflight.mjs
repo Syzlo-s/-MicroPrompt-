@@ -69,6 +69,7 @@ const pick = (p, re) => {
     return null;
   }
 };
+// 客户端 6 处必须完全一致（这 6 处决定安装包与「关于」页显示什么）
 versions["package.json"] = pick("package.json", /"version"\s*:\s*"([^"]+)"/);
 versions["tauri.conf.json"] = pick("src-tauri/tauri.conf.json", /"version"\s*:\s*"([^"]+)"/);
 versions["Cargo.toml"] = pick("src-tauri/Cargo.toml", /^version\s*=\s*"([^"]+)"/m);
@@ -77,11 +78,28 @@ versions["关于页"] = pick("src/components/SettingsDialog.tsx", /轻提词 测
 versions["欢迎页"] = pick("src/components/WelcomeScreen.tsx", /当前版本：测试 ([0-9.]+)/);
 // ai_server.py 里版本是常量 VERSION = "x.y.z"（/ai/health 上报的就是它），
 // 旧正则 /version="…"/ 匹配的是带引号的字面量，永远取不到值（会静默显示 null）。
-versions["ai_server(health)"] = pick("server_ai/ai_server.py", /^VERSION\s*=\s*"([^"]+)"/m);
+// 4.1.2 起服务端是**独立**版本号：服务端可以单独发版（例如只改后台与接口，
+// 桌面端仍是 4.1.1、用户不用重装），所以只要求它不落后于客户端。
+const serverVersion = pick("server_ai/ai_server.py", /^VERSION\s*=\s*"([^"]+)"/m);
 const uniq = Array.from(new Set(Object.values(versions).filter(Boolean)));
 for (const [k, v] of Object.entries(versions)) console.log("         " + k.padEnd(24) + v);
-if (uniq.length === 1) ok("全部一致：" + uniq[0]);
-else bad("版本号不一致：" + uniq.join(" / ") + " —— 改版本号要同步这 7 处");
+console.log("         " + "ai_server(health)".padEnd(24) + serverVersion + "   ← 服务端独立版本");
+if (uniq.length === 1) ok("客户端 6 处一致：" + uniq[0]);
+else bad("客户端版本号不一致：" + uniq.join(" / ") + " —— 改版本号要同步这 6 处");
+const vcmp = (a, b) => {
+  const x = String(a).split(".").map(Number);
+  const y = String(b).split(".").map(Number);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0);
+  }
+  return 0;
+};
+if (!serverVersion) bad("取不到 server_ai/ai_server.py 里的 VERSION 常量");
+else if (uniq.length === 1 && vcmp(serverVersion, uniq[0]) < 0) {
+  bad("服务端版本 " + serverVersion + " 落后于客户端 " + uniq[0] + "（客户端会用到服务端的新接口）");
+} else if (uniq.length === 1) {
+  ok("服务端版本 " + serverVersion + "（可独立发版，不落后于客户端即可）");
+}
 const issName = pick("src-tauri/inno/setup.iss", /OutputBaseFilename=([^\r\n]+)/);
 if (issName && uniq.length === 1 && !issName.includes(uniq[0])) {
   bad("安装包输出文件名与版本不一致：" + issName);
@@ -95,6 +113,8 @@ const must = [
   ["server_ai/ai_server.py", "AI 服务端"],
   ["server_ai/admin_cli.py", "管理员命令行"],
   ["server_ai/selfcheck.py", "部署自检"],
+  ["server_ai/admin_ui.html", "管理后台界面源文件"],
+  ["server_ai/sync_admin_page.py", "后台界面注入脚本"],
 ];
 for (const [p, d] of must) (has(p) ? ok(p) : bad("缺少 " + p + "（" + d + "）"));
 // setup.iss 必须是 UTF-8 with BOM，否则中文应用名/输出文件名会乱码
