@@ -6,8 +6,9 @@
 在 4.0.0 的「纯转发」版本上补上：鉴权 / 额度 / 会员 / 订单。
 4.1.0 再把第三方账号系统 Casdoor 换成内置账号模块（自建注册/登录/凭证校验），
 使账号与 AI 额度在同一个服务里管理；客户端一行都不用改（兼容 Casdoor 的 5 个接口）。
-4.1.1 修注册：用户名放开中文（2~32 位），并把「用户名/密码不符合要求」写成
-一眼能看懂的整句（此前只收 ASCII，中文昵称会被当场拒掉且看不出原因）。
+4.1.1 修注册：用户名放开中文（1~32 位），并把「用户名/密码不符合要求」写成
+一眼能看懂的整句（此前只收 ASCII，中文昵称会被当场拒掉且看不出原因；
+同日再补齐单字用户名——用户实际填的是「吴」这种单姓，被 2 位下限挡掉了）。
 
 设计要点
   · 鉴权：客户端必须带 Casdoor access_token（Authorization: Bearer xxx），
@@ -123,10 +124,11 @@ FAIL_WINDOW_SEC = int(os.environ.get("MP_FAIL_WINDOW_SEC", "900"))   # 15 分钟
 AVATAR_MAX_BYTES = 2 * 1024 * 1024
 AVATAR_EXTS = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
                "webp": "image/webp"}
-# 用户名：中英文、数字、下划线、连字符，2~32 位，首尾不能是 _ 或 -
+# 用户名：中英文、数字、下划线、连字符，1~32 位，首尾不能是 _ 或 -
 # 4.1.1 起放开中文（老 Casdoor 时代的用户习惯用中文昵称，只收 ASCII 会当场被拒）
+# 4.1.1 同日补齐：允许单字用户名（用户实际填的是「吴」这种单姓，被原来的 2 位下限挡掉了）
 USERNAME_RE = re.compile(
-    r"^[A-Za-z0-9\u4e00-\u9fa5](?:[A-Za-z0-9_\-\u4e00-\u9fa5]{0,30})[A-Za-z0-9\u4e00-\u9fa5]$")
+    r"^[A-Za-z0-9\u4e00-\u9fa5](?:[A-Za-z0-9_\-\u4e00-\u9fa5]{0,30}[A-Za-z0-9\u4e00-\u9fa5])?$")
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
                      r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 AVATAR_FILE_RE = re.compile(r"^[0-9a-fA-F-]{36}\.(png|jpg|jpeg|webp)$")
@@ -598,7 +600,7 @@ class Store(object):
         name = (name or "").strip()
         if not valid_username(name):
             raise ValueError("用户名不符合要求：只能中英文、数字、下划线或连字符，"
-                             "2~32 位，且不能以 _ 或 - 开头结尾")
+                             "1~32 位，且不能以 _ 或 - 开头结尾")
         if len(password or "") < 8:
             raise ValueError("密码不符合要求：至少 8 位")
         if len(password or "") > 128:
@@ -1354,7 +1356,7 @@ ADMIN_PAGE = r"""<!doctype html>
     <button class="primary" id="ncreate">新建账号</button>
   </div>
   <div class="hint" style="margin-top:6px">
-    用户名规则（和客户端注册页一致）：<b>2~32 位</b>，可用<b>中英文、数字、下划线、连字符</b>，
+    用户名规则（和客户端注册页一致）：<b>1~32 位</b>，可用<b>中英文、数字、下划线、连字符</b>，
     首尾不能是 <code>_</code> 或 <code>-</code>；密码<b>至少 8 位</b>。
   </div>
   <div class="hint" style="margin-top:6px">
