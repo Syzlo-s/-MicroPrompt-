@@ -10,6 +10,8 @@
 //     3.8（4.1.2 新增）重构后的控制台：概览 KPI + 手写 SVG 趋势图 + 暗色模式 +
 //        2 秒实时轮询（外部下单 → 侧边栏徽标自动变）+ 详情抽屉 + 批量操作 +
 //        订单确认收款写盘 + 操作审计留痕 + 收款码在线上传/删除 + 布局体检（溢出/裁切/窄屏）
+//     3.9（4.1.3 新增）订单「打回（没收到款）」：按钮 → 自绘弹窗（可填原因）→
+//        磁盘订单 canceled + 原因/操作人落盘 + 会员没被开通 + 审计留痕 + 打回后能重新下单
 //     4. 密钥填错时给出错误提示且不崩
 //
 // 依赖：Node >= 22（内置 fetch / WebSocket）+ 本机 Chrome 或 Edge；被测服务端只用标准库。
@@ -308,10 +310,16 @@ async function nav(tab) {
   await sleep(300);
 }
 /** 点一个会弹确认的按钮：4.1.2 起改成自绘弹窗（不再用原生 confirm），所以要多点一次「确定」 */
-async function act(sel) {
+async function act(sel, typed) {
   await ev(`(document.querySelector(${JSON.stringify(sel)})||{click(){}}).click()`);
   await waitFor(`document.getElementById('askModal').classList.contains('on')`, 2500);
   const body = await ev(`document.getElementById('askBody').textContent || ''`);
+  if (typed) {
+    await ev(`(() => { const el = document.getElementById('askInput');
+                        el.value = ${JSON.stringify(typed)};
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        return el.value; })()`);
+  }
   await ev(`document.getElementById('askOk').click()`);
   return body;
 }
@@ -634,6 +642,45 @@ if (!REMOTE) {
     && !!readJson(path.join(DATA, 'members.json'))['uid-alice'],
     JSON.stringify(odisk[oid] || {}).slice(0, 120));
 
+  // 4.1.3：待处理订单「打回（没收到款）」——作废订单、不加会员、留审计、能重新下单
+  const ores2 = await fetch(`http://127.0.0.1:${PORT}/ai/order`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + aliceTempToken },
+    body: JSON.stringify({ plan: 'month' }),
+  }).then((r) => r.json()).catch(() => ({}));
+  const oid2 = ((ores2.order || {}).id) || '';
+  await fetch(`http://127.0.0.1:${PORT}/ai/order/claim`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + aliceTempToken },
+    body: JSON.stringify({ id: oid2 }),
+  }).catch(() => {});
+  const hasReject = await waitFor(`!!document.querySelector('button[data-reject="${oid2}"]')`, 9000);
+  check('待处理订单带「打回（没收到款）」按钮（4.1.3 新增）', hasReject,
+    '订单 ' + oid2);
+  const untilBefore = (readJson(path.join(DATA, 'members.json'))['uid-alice'] || {}).memberUntil || 0;
+  const rbody = await act(`button[data-reject="${oid2}"]`, '收款码没备注订单号');
+  check('点「打回」弹出确认弹窗（文案带订单号，且不是原生 confirm）',
+    rbody.includes(oid2) && rbody.includes('打回') && dialogs.length === 0, rbody.slice(0, 90));
+  const rejected = await waitFor(
+    `(document.getElementById('orderList').innerText||'').includes('已作废')`, 9000);
+  const odisk2 = readJson(path.join(DATA, 'orders.json')) || {};
+  const untilAfter = (readJson(path.join(DATA, 'members.json'))['uid-alice'] || {}).memberUntil || 0;
+  check('打回后写盘：订单 canceled + 记下原因 + 没有加会员',
+    rejected && (odisk2[oid2] || {}).status === 'canceled'
+    && (odisk2[oid2] || {}).cancelReason === '收款码没备注订单号'
+    && (odisk2[oid2] || {}).canceledBy === 'admin'
+    && untilAfter === untilBefore,
+    JSON.stringify(odisk2[oid2] || {}).slice(0, 140));
+  check('打回后页面上这笔订单显示「已作废」', rejected);
+  const canReorder = await fetch(`http://127.0.0.1:${PORT}/ai/order`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + aliceTempToken },
+    body: JSON.stringify({ plan: 'month' }),
+  }).then((r) => r.json()).catch(() => ({}));
+  check('打回后用户可以重新下单（拿到新订单号）',
+    !!((canReorder.order || {}).id) && (canReorder.order || {}).id !== oid2,
+    String((canReorder.order || {}).id));
+
   // 操作日志留痕
   await nav('logs');
   const logShown = await waitFor(`(document.getElementById('logList').innerText||'').includes('确认收款开通')`, 8000);
@@ -641,6 +688,13 @@ if (!REMOTE) {
   check('操作日志页出现「确认收款开通」留痕（后台每次操作都记）',
     logShown && Array.isArray(logDisk.items) && logDisk.items.length > 0,
     '磁盘 ' + ((logDisk.items || []).length) + ' 条');
+  const rejectLogged = await waitFor(
+    `(document.getElementById('logList').innerText||'').includes('打回订单')`, 8000);
+  check('操作日志页出现「打回订单（未收到付款）」留痕（含打回原因）',
+    rejectLogged
+    && (logDisk.items || []).some((l) => (l.action || '').includes('打回')
+      && (l.detail || '').includes('收款码没备注订单号')),
+    JSON.stringify((logDisk.items || [])[0] || {}).slice(0, 140));
   check('日志页带登录锁定记录与后台密钥错误两块',
     (await ev(`!!document.getElementById('guardList') && !!document.getElementById('failList')`)) === true);
 

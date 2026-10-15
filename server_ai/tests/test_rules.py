@@ -440,6 +440,10 @@ def main():
               "/ai/admin/poll" in html and "/ai/admin/overview" in html
               and "/ai/admin/logs" in html and "/ai/admin/paycode/upload" in html
               and 'class="nav-item' in html and "近 14 天 AI 调用" in html, "")
+        # 4.1.3：待处理订单要能「打回」（没收到付款时作废，而不是一直挂在待处理）
+        check("订单页带「打回」按钮与接口（4.1.3）",
+              "/ai/admin/reject" in html and 'data-reject' in html
+              and "打回" in html and "cancelReason" in html, "")
         # 面板是手写的 HTML+JS：JS 里 $("xxx") / $('xxx') 引用的 id 必须真的存在，
         # 否则点按钮静默无效（4.1.2 起 JS 统一用单引号，所以两种引号都要认）
         ids_in_html = set(re.findall(r'id="([A-Za-z0-9_\-]+)"', html))
@@ -556,6 +560,62 @@ def main():
                       {"username": "nobody-xyz", "on": True}, admin=ADMIN_KEY)
         check("给不存在的账号开通会返回 404",
               c7 == 404 and d7.get("code") == "not_found", "http=%s" % c7)
+
+        # 19. 管理员打回（未收到付款）：作废订单、不加会员、留审计、可重新下单
+        print("[19] 管理员打回订单：没收到钱时作废，而不是一直挂在待处理")
+        _, ro = call(MAIN, "/ai/order", "POST", {"plan": "month"}, token="rejectuser")
+        rid = (ro.get("order") or {}).get("id")
+        call(MAIN, "/ai/order/claim", "POST", {"id": rid}, token="rejectuser")
+        _, rq0 = call(MAIN, "/ai/quota", "POST", {}, token="rejectuser")
+        until0 = (rq0.get("quota") or {}).get("memberUntil")
+        c8, d8 = call(MAIN, "/ai/admin/reject", "POST",
+                      {"id": rid, "reason": "收款码没备注订单号"}, admin=ADMIN_KEY)
+        check("管理员可以打回待处理（claimed）订单",
+              c8 == 200 and (d8.get("order") or {}).get("status") == "canceled",
+              "http=%s status=%s" % (c8, (d8.get("order") or {}).get("status")))
+        _, rq1 = call(MAIN, "/ai/quota", "POST", {}, token="rejectuser")
+        check("打回不会开通会员（memberUntil 没变）",
+              (rq1.get("quota") or {}).get("memberUntil") == until0,
+              "%s -> %s" % (until0, (rq1.get("quota") or {}).get("memberUntil")))
+        c9, d9 = call(MAIN, "/ai/admin/reject", "POST", {"id": rid}, admin=ADMIN_KEY)
+        check("重复打回是幂等的（仍是 canceled，不报错、不覆盖原因）",
+              c9 == 200 and (d9.get("order") or {}).get("status") == "canceled"
+              and (d9.get("order") or {}).get("cancelReason") == "收款码没备注订单号",
+              str(d9)[:150])
+        try:
+            with open(os.path.join(main_dir, "orders.json"), encoding="utf-8") as fh:
+                od = json.load(fh)
+            check("磁盘 orders.json 记下了打回原因与时间",
+                  (od.get(rid) or {}).get("cancelReason") == "收款码没备注订单号"
+                  and float((od.get(rid) or {}).get("canceledAt") or 0) > 0
+                  and (od.get(rid) or {}).get("canceledBy") == "admin",
+                  str(od.get(rid))[:170])
+        except Exception as e:  # noqa: BLE001
+            check("磁盘 orders.json 记下了打回原因与时间", False, str(e))
+        c10, d10 = call(MAIN, "/ai/admin/logs", "POST", {}, admin=ADMIN_KEY)
+        logs = d10.get("logs") or []
+        check("打回动作写进了操作审计",
+              c10 == 200 and any("打回" in (l.get("action") or "") for l in logs),
+              str(logs[:2])[:170])
+        _, ro2 = call(MAIN, "/ai/order", "POST", {"plan": "month"}, token="rejectuser")
+        check("打回后用户可以重新下单（拿到新订单号）",
+              bool((ro2.get("order") or {}).get("id"))
+              and (ro2.get("order") or {}).get("id") != rid,
+              "%s -> %s" % (rid, (ro2.get("order") or {}).get("id")))
+        _, po = call(MAIN, "/ai/order", "POST", {"plan": "day"}, token="paiduser")
+        pid = (po.get("order") or {}).get("id")
+        call(MAIN, "/ai/admin/confirm", "POST", {"id": pid}, admin=ADMIN_KEY)
+        c11, d11 = call(MAIN, "/ai/admin/reject", "POST", {"id": pid}, admin=ADMIN_KEY)
+        check("已开通的订单不允许打回（防止一键抹掉会员）",
+              c11 == 400 and d11.get("code") == "not_rejectable",
+              "http=%s code=%s" % (c11, d11.get("code")))
+        c12, d12 = call(MAIN, "/ai/admin/reject", "POST",
+                        {"id": "20200101000000-NOPE"}, admin=ADMIN_KEY)
+        check("打回不存在的订单返回 404",
+              c12 == 404 and d12.get("code") == "not_found", "http=%s" % c12)
+        c13, d13 = call(MAIN, "/ai/admin/reject", "POST", {"id": rid})
+        check("普通用户打不了订单（403 admin_auth）",
+              c13 == 403 and d13.get("code") == "admin_auth", "http=%s" % c13)
     finally:
         for p in procs:
             try:
