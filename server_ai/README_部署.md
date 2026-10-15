@@ -1,4 +1,4 @@
-# 轻提词 AI 中转服务 · 4.1.7 部署与运维
+# 轻提词 AI 中转服务 · 4.1.8 部署与运维
 
 > 相对 4.0.0 的变化：**加了鉴权、额度、会员、订单**。
 > 4.0.0 的接口是完全开放的（任何人拿到地址就能刷你的 DeepSeek Key），
@@ -9,11 +9,14 @@
 > **4.1.4 把后台配色简化成与客户端同一套**（单一靛蓝强调色 + slate 中性底，删掉所有渐变）；
 > **4.1.5 修概览页布局 bug**（`.grid.side` 类名撞上左侧栏的 `.side`，趋势图被挤成 81px 宽的
 > 窄条 → 改名 `.grid.split`，图宽恢复 723px）；**4.1.6 / 4.1.7 修「后台偶发空白」**
-> （HTTP/1.0 响应补 `Connection: close`；读接口失败自动重试一次 + 失败时给可读提示）。
+> （HTTP/1.0 响应补 `Connection: close`；读接口失败自动重试一次 + 失败时给可读提示）；
+> **4.1.8 补 `POST /api/change-password`**（用户终于能自己改密码了：验原密码 → 改完把
+> 其它设备的旧令牌踢下线，同时给当前设备补一张新令牌，本人不用重新登录）。
 >
-> 版本号注意：**服务端 4.1.7 与桌面客户端 4.1.1 是两条独立的线**。4.1.2 ~ 4.1.7 只改服务端，
+> 版本号注意：**服务端 4.1.8 与桌面客户端 4.1.1 是两条独立的线**。4.1.2 ~ 4.1.8 只改服务端，
 > 用户不需要重新安装客户端（`npm run preflight` 已按这个规则核对：客户端 6 处必须一致，
-> 服务端版本只要求不落后于客户端）。
+> 服务端版本只要求不落后于客户端）。4.1.8 的改密接口是给**下一版客户端**用的：
+> 老客户端不调用它，所以先上线服务端不会影响任何人。
 
 ---
 
@@ -26,7 +29,7 @@
 | `sync_admin_page.py` | **注入脚本**（4.1.2 新增）：把 `admin_ui.html` 写进 `ADMIN_PAGE`，保证「线上只传一个 ai_server.py」；`--check` 比对是否忘了注入，并顺带用 `node --check` 校验页面 JS 语法 |
 | `admin_cli.py` | 管理员工具（命令行）：看订单 / 确认收款 / 手工加天数 / 查用户 |
 | `selfcheck.py` | 部署自检：一条命令确认新代码到底生效没有 |
-| `tests/` | 三套回归：`test_rules.py`（62 项）、`test_accounts.py`（74 项）、`admin_panel_smoke.mjs`（95 项，真浏览器点后台）；只在本地跑，不参与部署 |
+| `tests/` | 三套回归：`test_rules.py`（62 项）、`test_accounts.py`（85 项）、`admin_panel_smoke.mjs`（95 项，真浏览器点后台）；只在本地跑，不参与部署 |
 | `.env.example` | 环境变量模板（服务端不自动读 .env，需按说明 export） |
 | `data/` | 运行时自动创建：用户、会员、用量、订单、每日统计、操作日志、管理员密钥、收款码、自动备份 |
 
@@ -76,8 +79,8 @@ MP_ADMIN_KEY='你自己设一个长密钥' python3 selfcheck.py
 
 ```bash
 cd /home/admin/ai_server      # 或本机 server_ai 目录
-python3 tests/test_rules.py      # 19 组 / 59 项检查：额度、订单（含打回）、会员、备份（老的回归）
-python3 tests/test_accounts.py   # 11 组 / 71 项检查：注册、登录、令牌、兼容层、防爆破、账号管理（4.1.0 新增，4.1.1 加中文用户名用例）
+python3 tests/test_rules.py      # 19 组 / 62 项检查：额度、订单（含打回）、会员、备份（老的回归）
+python3 tests/test_accounts.py   # 12 组 / 85 项检查：注册、登录、令牌、兼容层、防爆破、账号管理、用户自助改密（4.1.8）
 ```
 
 覆盖：免费额度与跨天重置、并发抢额度（不会超发）、订单复用与恢复、确认幂等
@@ -85,7 +88,9 @@ python3 tests/test_accounts.py   # 11 组 / 71 项检查：注册、登录、令
 管理命令行与后台页面、缺 Key 拒绝启动、超长文本不扣额度、**免费不限量与用量重置**；
 以及 4.1.0 的账号体系：注册校验、登录话术统一、`alg=none`/换密钥/过期/篡改令牌全被拒、
 旧令牌在改密/停用后立刻失效、同名与同 IP 双维度防爆破、头像魔数与体积校验、
-账号管理接口的 403 保护、重启后账号与资料仍在。
+账号管理接口的 403 保护、重启后账号与资料仍在；4.1.8 又补了**用户自助改密**这一组：
+原密码不对 / 新密码不足 8 位 / 新旧相同 / 不带令牌 全部被拒，
+改完「新密码能登、旧密码登不上、旧令牌 401、新令牌 200」（其它设备掉线、本机不断）。
 
 > 端口：套件里的实例（含假 Casdoor）都用 `free_port()` 动态挑空闲端口，不写死 2589-2600——
 > 否则会被 Hyper-V/WinNAT 保留段或已退出进程留下的 Bound 套接字占住，
@@ -99,7 +104,7 @@ Python 回归只验到「页面标记存在、JS 引用的 id 都存在」；下
 `/admin` 点一遍，验运行期行为（含原生 confirm 文案、列表刷新、以及 `data/*.json` 真的变了）：
 
 ```bash
-node tests/admin_panel_smoke.mjs        # 本地模式：自建临时服务端 + 种子数据 → 54 项全过，退出码 0
+node tests/admin_panel_smoke.mjs        # 本地模式：自建临时服务端 + 种子数据 → 95 项全过，退出码 0
 ```
 
 部署后从自己电脑验线上面板（**只读**，不会改动任何真实账号数据）：
@@ -112,7 +117,7 @@ node tests/admin_panel_smoke.mjs        # 只读模式 8 项：能开、标题�
 
 > 本地模式（不填 `MP_PANEL_URL`）会自建临时服务端 + 种子数据，
 > 连**账号管理按钮**（重置密码 / 停用 / 启用 / 踢下线 / 备注 / 新建账号）一起点一遍，
-> 并核对磁盘上的 `data/*.json` 与「临时密码真能登录、旧密码真失效」，共 **54 项**。
+> 并核对磁盘上的 `data/*.json` 与「临时密码真能登录、旧密码真失效」，共 **95 项**。
 
 启动日志里会打印：端口、数据目录、账号模式、免费额度、会员日上限、
 **管理员密钥**（4.1.0 起只打印后 4 位，完整密钥在 `data/admin_key.txt`，权限 600）。
@@ -190,6 +195,7 @@ node tests/admin_panel_smoke.mjs        # 只读模式 8 项：能开、标题�
 | `POST /api/login/oauth/access_token` | 登录 | `application/x-www-form-urlencoded`；返回 `{access_token, expires_in, token_type}` |
 | `GET /api/get-account` | 读资料 | `Authorization: Bearer <token>`；**只返回** `id/name/displayName/avatar/createdTime/lastLoginTime` |
 | `POST /api/update-user` | 改昵称/头像 | 忽略请求体里的 `id/name/pwd/tokenVer/status/note`（客户端改不了自己的身份与状态） |
+| `POST /api/change-password` | **自己改密码（4.1.8）** | 必须带令牌 + **必须验原密码**；新密码 8~128 位且不能与原密码相同；成功后 `tokenVer +1`（其它设备掉线）并返回**新令牌**给当前设备 |
 | `POST /api/upload-resource` | 上传头像 | multipart；按**文件头魔数**判类型、≤2 MB、服务端生成文件名 |
 
 - **令牌**：HS256 自签 JWT，payload 含 `id` / `name` / `ver` / `exp`，
@@ -202,6 +208,37 @@ node tests/admin_panel_smoke.mjs        # 只读模式 8 项：能开、标题�
   `尝试次数过多，请 10 分钟后再试` / `用户名已被注册` / `请求格式不正确`。
 - **未知的 `/api/*`、`/avatar/*`** 一律 404 JSON；所有响应都带
   `Access-Control-Allow-Origin: *`，`OPTIONS` 预检返回 204 —— 否则 WebView2 会把它当网络故障。
+
+### 用户自己改密码（4.1.8）
+
+以前客户端「用户」页写的是「如需修改密码，请联系客服」——用户只能发邮件，你只能手动
+`/ai/admin/account/resetpwd` 生成临时密码再发回去。4.1.8 起客户端可以自己改，服务端只管校验：
+
+| 规则 | 为什么这么定 |
+|---|---|
+| 必须带登录令牌，**身份只从令牌取** | 不接受客户端传 `uid` / `username`，否则就是「拿自己的令牌改别人的密码」 |
+| **必须验原密码** | 手机 / 电脑被同事临时借用时，不能直接就把密码改掉 |
+| 新密码 8~128 位、不能与原密码相同 | 与注册同一套规则，避免「改了个更弱的」 |
+| 失败话术统一（`原密码不正确`，不区分账号是否存在） | 与登录一致的账号枚举防护 |
+| 成功后 `tokenVer +1` | 其它设备上的旧令牌立刻失效（等于顺手踢下线） |
+| **同时返回一张新令牌** | 当前设备用新令牌继续用，**改完不用重新登录**（客户端会把旧令牌换掉） |
+
+改完的行为，客户端会明确告诉用户：**「其它设备上的登录已失效，本机继续保持登录」**。
+
+上线后可以这样验（不会动任何真实账号）：
+
+```bash
+# 1) 不带令牌 → 401（说明接口在，不是 404）
+curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:2580/api/change-password \
+  -H 'Content-Type: application/json' -d '{"oldPassword":"x","newPassword":"yyyyyyyy"}'
+# 期望 401
+
+# 2) 本地联调实例上跑完整回归（含改密 11 项）
+python3 tests/test_accounts.py
+```
+
+> 提醒：改密接口和登录一样走 **http 明文**（2580）。要真正安全得配 HTTPS（Caddy + 域名）
+> 或让用户走 `ssh -L 2580:127.0.0.1:2580 admin@<服务器>`，这一条在「已知限制」里一直挂着。
 
 ### 回退到 Casdoor（开关）
 ```
@@ -435,7 +472,7 @@ python3 sync_admin_page.py --check
 ### 后台自己的回归测试
 
 ```bash
-node tests/admin_panel_smoke.mjs          # 真起无头 Chrome 点后台（90 项）
+node tests/admin_panel_smoke.mjs          # 真起无头 Chrome 点后台（95 项）
 MP_SHOT=D:\shots\p node tests/admin_panel_smoke.mjs   # 顺手把各页签截图（评审看设计用）
 # 对着线上只读巡检（不改任何真实数据）：
 MP_PANEL_URL=http://8.163.51.216:2581/admin MP_ADMIN_KEY=<线上密钥> node tests/admin_panel_smoke.mjs
