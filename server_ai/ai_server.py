@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-轻提词 · AI 中转服务（4.1.2）
+轻提词 · AI 中转服务（4.1.3）
 ============================================================
 在 4.0.0 的「纯转发」版本上补上：鉴权 / 额度 / 会员 / 订单。
 4.1.0 再把第三方账号系统 Casdoor 换成内置账号模块（自建注册/登录/凭证校验），
@@ -17,6 +17,9 @@
   · 安全视图：登录失败锁定记录 + 管理员密钥错误（后者只进内存，防磁盘放大）
   · 收款码在线上传/替换/删除（不用再 scp 图片到服务器）
 界面源文件是 server_ai/admin_ui.html，用 sync_admin_page.py 注入下面的 ADMIN_PAGE。
+4.1.3 补「打回」：用户点了「我已完成支付」但管理员查账发现没收到钱时，
+  后台订单页可以一键打回（POST /ai/admin/reject）—— 订单作废、不开会员、不计收入、
+  记进操作审计，用户端显示「已作废」并可重新下单；已开通的订单不允许打回（防误抹会员）。
 
 设计要点
   · 鉴权：客户端必须带 Casdoor access_token（Authorization: Bearer xxx），
@@ -61,6 +64,7 @@
   POST /ai/admin/paycode/list              -> 4 个收款码槽位（日卡/月卡 × 微信/支付宝）
   POST /ai/admin/paycode/upload {plan, method, data(dataURL)}   -> 上传/替换收款码
   POST /ai/admin/paycode/delete {plan, method}                  -> 删除收款码
+  POST /ai/admin/reject         {id, reason?}                   -> 打回订单（未收到付款，4.1.3）
 
 运行
   MP_ADMIN_KEY=你的管理密钥 python3 ai_server.py
@@ -124,7 +128,7 @@ PORT = int(os.environ.get("MP_PORT", "2581"))
 CASDOOR_URL = os.environ.get("MP_CASDOOR_URL", "http://127.0.0.1:2580").rstrip("/")
 
 # ---- 4.1.0 自建账号模块 ----
-VERSION = "4.1.2"
+VERSION = "4.1.3"
 # casdoor：令牌拿去问 Casdoor（4.0.3 的行为，默认，便于随时回滚）
 # builtin：令牌本地校验，并额外监听 MP_AUTH_PORT（客户端写死的 2580）
 AUTH_MODE = (os.environ.get("MP_AUTH_MODE", "casdoor") or "casdoor").strip().lower()
@@ -1404,6 +1408,33 @@ class Store(object):
             self._stats_bump("revenue", float(o.get("amount") or 0), force=True)
             return o, None
 
+    def reject_order(self, order_id, reason=""):
+        """管理员打回订单：没收到钱 / 用户说付了但账上没到 → 作废，不加会员、不计收入。
+
+        为什么需要它：用户点了「我已完成支付」之后，订单会停在 claimed 等管理员确认；
+        如果管理员查了收款记录发现没收到，此前只能干放着（后台一直显示「待处理」），
+        用户那边也会一直等。打回后订单变 canceled，用户可以重新下单。
+
+        状态机：pending / claimed --(打回)--> canceled；已 paid 的不允许打回
+        （会员天数已经加上去了，要退得走「手工调整会员」那条路，避免一键把会员抹掉）。
+        """
+        with self.lock:
+            o = self.orders.get(order_id)
+            if not o:
+                return None, "订单不存在", None
+            st = o.get("status")
+            if st == "paid":
+                return o, "该订单已开通会员，不能打回；如需退款请手工调整会员天数", 400
+            if st == "canceled":
+                return o, None, None          # 幂等：重复打回不报错、不覆盖原原因
+            o["status"] = "canceled"
+            o["canceledAt"] = now_ts()
+            o["cancelReason"] = (reason or "").strip()[:200]
+            o["canceledBy"] = "admin"
+            self.orders[order_id] = o
+            self._save("orders.json", self.orders)
+            return o, None, None
+
     def list_orders(self, status=None):
         items = list(self.orders.values())
         if status:
@@ -1522,7 +1553,7 @@ ADMIN_PAGE = r"""<!doctype html>
   · 密钥只存在使用者自己的浏览器 localStorage，每次请求走 X-Admin-Key 头。
   · 为了回归测试（tests/admin_panel_smoke.mjs）能点得动，保留了这些钩子：
       id: key / save / clear / out / users / nname / npwd / ncreate / uresetall
-      data-*: data-confirm / data-reset / data-zero / data-free / data-name /
+      data-*: data-confirm / data-reject / data-reset / data-zero / data-free / data-name /
               data-pwd / data-kick / data-status / data-note
 -->
 <style>
@@ -2870,12 +2901,18 @@ ADMIN_PAGE = r"""<!doctype html>
       '<div><b>' + esc(o.name || '-') + '</b> <span class="badge b-' + o.status + '">' +
       statusText(o.status) + '</span></div>' +
       '<div class="meta">' + esc(o.planName || o.plan) + ' / ' + (o.days || '-') + ' 天 · 下单 ' +
-      fmtTime(o.created) + (o.paidAt ? ' · 开通 ' + fmtTime(o.paidAt) : '') + '</div>' +
+      fmtTime(o.created) + (o.paidAt ? ' · 开通 ' + fmtTime(o.paidAt) : '') +
+      (o.canceledAt ? ' · 作废 ' + fmtTime(o.canceledAt) : '') + '</div>' +
       '<div class="oid">' + esc(o.id) + ' <button class="copy" data-copy="' + esc(o.id) + '">复制</button></div>' +
+      (o.status === 'canceled' && o.cancelReason
+        ? '<div class="hint" style="margin-top:4px">打回原因：' + esc(o.cancelReason) + '</div>' : '') +
       '</div>' +
       '<div style="text-align:right">' +
       '<div class="amt">' + money(o.amount) + '</div>' +
-      (can ? '<button class="btn sm primary" data-confirm="' + esc(o.id) + '" style="margin-top:6px">确认收款并开通</button>' : '') +
+      (can
+        ? '<button class="btn sm primary" data-confirm="' + esc(o.id) + '" style="margin-top:6px">确认收款并开通</button>' +
+          '<button class="btn sm danger" data-reject="' + esc(o.id) + '" style="margin-top:6px">打回（没收到款）</button>'
+        : '') +
       '</div></div>';
   }
   function renderOrders() {
@@ -2904,8 +2941,33 @@ ADMIN_PAGE = r"""<!doctype html>
     $$('[data-confirm]', $('orderList')).forEach(function (b) {
       b.addEventListener('click', function () { confirmOrder(b.getAttribute('data-confirm'), b); });
     });
+    $$('[data-reject]', $('orderList')).forEach(function (b) {
+      b.addEventListener('click', function () { rejectOrder(b.getAttribute('data-reject'), b); });
+    });
     $$('[data-copy]', $('orderList')).forEach(function (b) {
       b.addEventListener('click', function () { copyText(b.getAttribute('data-copy'), '订单号已复制'); });
+    });
+  }
+  function rejectOrder(id, btn) {
+    ask({
+      title: '打回订单（未收到付款）',
+      body: '订单 ' + id + ' 没收到款？\n打回后该订单作废（客户端会显示「已作废」），\n' +
+            '不会开通会员、不计收入；用户可以重新下单。',
+      input: true,
+      placeholder: '原因（可选，会写进操作日志，例如：收款码没备注订单号）',
+      ok: '确认打回',
+      danger: true
+    }, function (reason) {
+      if (btn) { btn.disabled = true; btn.textContent = '处理中…'; }
+      api('/ai/admin/reject', { id: id, reason: reason || '' }).then(function (res) {
+        if (!res.data.ok) {
+          err(res);
+          if (btn) { btn.disabled = false; btn.textContent = '打回（没收到款）'; }
+          return;
+        }
+        say('已打回：' + id + '（未收到付款，未开通会员）', 'ok');
+        refresh(true);
+      });
     });
   }
   function confirmOrder(id, btn) {
@@ -3558,6 +3620,22 @@ class Handler(BaseHTTPRequestHandler):
             self._audit("确认收款开通", oid, "%s ￥%s / %s 天"
                         % (order.get("name"), order.get("amount"), order.get("days")))
             self._ok(order=order, memberUntil=order.get("memberUntil"))
+            return
+        if path == "/ai/admin/reject":
+            if not self._need_admin():
+                return
+            body = self._body()
+            oid = (body.get("id") or "").strip()
+            reason = (body.get("reason") or "").strip()
+            order, err, status = self.store.reject_order(oid, reason)
+            if err:
+                self._err(err, "not_rejectable" if status else "not_found",
+                         status or 404)
+                return
+            self._audit("打回订单（未收到付款）", oid,
+                        "%s · %s%s" % (order.get("name"), order.get("planName"),
+                                       (" · " + reason) if reason else ""))
+            self._ok(order=order)
             return
         if path == "/ai/admin/grant":
             if not self._need_admin():

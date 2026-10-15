@@ -15,7 +15,7 @@
   · 密钥只存在使用者自己的浏览器 localStorage，每次请求走 X-Admin-Key 头。
   · 为了回归测试（tests/admin_panel_smoke.mjs）能点得动，保留了这些钩子：
       id: key / save / clear / out / users / nname / npwd / ncreate / uresetall
-      data-*: data-confirm / data-reset / data-zero / data-free / data-name /
+      data-*: data-confirm / data-reject / data-reset / data-zero / data-free / data-name /
               data-pwd / data-kick / data-status / data-note
 -->
 <style>
@@ -1363,12 +1363,18 @@
       '<div><b>' + esc(o.name || '-') + '</b> <span class="badge b-' + o.status + '">' +
       statusText(o.status) + '</span></div>' +
       '<div class="meta">' + esc(o.planName || o.plan) + ' / ' + (o.days || '-') + ' 天 · 下单 ' +
-      fmtTime(o.created) + (o.paidAt ? ' · 开通 ' + fmtTime(o.paidAt) : '') + '</div>' +
+      fmtTime(o.created) + (o.paidAt ? ' · 开通 ' + fmtTime(o.paidAt) : '') +
+      (o.canceledAt ? ' · 作废 ' + fmtTime(o.canceledAt) : '') + '</div>' +
       '<div class="oid">' + esc(o.id) + ' <button class="copy" data-copy="' + esc(o.id) + '">复制</button></div>' +
+      (o.status === 'canceled' && o.cancelReason
+        ? '<div class="hint" style="margin-top:4px">打回原因：' + esc(o.cancelReason) + '</div>' : '') +
       '</div>' +
       '<div style="text-align:right">' +
       '<div class="amt">' + money(o.amount) + '</div>' +
-      (can ? '<button class="btn sm primary" data-confirm="' + esc(o.id) + '" style="margin-top:6px">确认收款并开通</button>' : '') +
+      (can
+        ? '<button class="btn sm primary" data-confirm="' + esc(o.id) + '" style="margin-top:6px">确认收款并开通</button>' +
+          '<button class="btn sm danger" data-reject="' + esc(o.id) + '" style="margin-top:6px">打回（没收到款）</button>'
+        : '') +
       '</div></div>';
   }
   function renderOrders() {
@@ -1397,8 +1403,33 @@
     $$('[data-confirm]', $('orderList')).forEach(function (b) {
       b.addEventListener('click', function () { confirmOrder(b.getAttribute('data-confirm'), b); });
     });
+    $$('[data-reject]', $('orderList')).forEach(function (b) {
+      b.addEventListener('click', function () { rejectOrder(b.getAttribute('data-reject'), b); });
+    });
     $$('[data-copy]', $('orderList')).forEach(function (b) {
       b.addEventListener('click', function () { copyText(b.getAttribute('data-copy'), '订单号已复制'); });
+    });
+  }
+  function rejectOrder(id, btn) {
+    ask({
+      title: '打回订单（未收到付款）',
+      body: '订单 ' + id + ' 没收到款？\n打回后该订单作废（客户端会显示「已作废」），\n' +
+            '不会开通会员、不计收入；用户可以重新下单。',
+      input: true,
+      placeholder: '原因（可选，会写进操作日志，例如：收款码没备注订单号）',
+      ok: '确认打回',
+      danger: true
+    }, function (reason) {
+      if (btn) { btn.disabled = true; btn.textContent = '处理中…'; }
+      api('/ai/admin/reject', { id: id, reason: reason || '' }).then(function (res) {
+        if (!res.data.ok) {
+          err(res);
+          if (btn) { btn.disabled = false; btn.textContent = '打回（没收到款）'; }
+          return;
+        }
+        say('已打回：' + id + '（未收到付款，未开通会员）', 'ok');
+        refresh(true);
+      });
     });
   }
   function confirmOrder(id, btn) {
