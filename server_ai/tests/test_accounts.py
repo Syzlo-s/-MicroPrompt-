@@ -608,10 +608,64 @@ def main():
         check("accounts.json 进入启动备份名单（不能成为唯一没有兜底的数据）",
               any(f.startswith("accounts.") for f in files), str(files[:8]))
         code, d, _h = call(rest_ai, "/ai/health")
-        check("/ai/health 报告版本 4.1.7 与账号数",
-              code == 200 and d.get("version") == "4.1.7"
+        check("/ai/health 报告版本 4.1.8 与账号数",
+              code == 200 and d.get("version") == "4.1.8"
               and int(d.get("accounts") or 0) >= 2 and d.get("authMode") == "builtin",
               str(d)[:140])
+
+        # ---------------- 30 用户自己改密码（4.1.8 新增） ----------------
+        # 单独用一个账号，避免把前面用例依赖的 alice/pw123456 改掉
+        print("[30] 用户自己改密码 /api/change-password（4.1.8）")
+        call(AUTH, "/api/signup", "POST",
+             {"username": "pwuser", "password": "pw123456"})
+        tk_old = login_ok(AUTH, "pwuser", "pw123456")
+        check("新账号可登录（改密前置条件）", bool(tk_old))
+
+        code, d, _h = call(AUTH, "/api/change-password", "POST",
+                           {"oldPassword": "wrong-old", "newPassword": "newpw12345"},
+                           token=tk_old)
+        check("原密码不对 → 拒绝且不改密码",
+              d.get("status") == "error" and "原密码" in (d.get("msg") or "")
+              and bool(login_ok(AUTH, "pwuser", "pw123456")), str(d)[:120])
+
+        code, d, _h = call(AUTH, "/api/change-password", "POST",
+                           {"oldPassword": "pw123456", "newPassword": "short7"},
+                           token=tk_old)
+        check("新密码 <8 位 → 拒绝",
+              d.get("status") == "error" and "至少 8 位" in (d.get("msg") or ""), str(d)[:120])
+
+        code, d, _h = call(AUTH, "/api/change-password", "POST",
+                           {"oldPassword": "pw123456", "newPassword": "pw123456"},
+                           token=tk_old)
+        check("新旧密码相同 → 拒绝",
+              d.get("status") == "error" and "不能与原密码相同" in (d.get("msg") or ""),
+              str(d)[:120])
+
+        code, d, _h = call(AUTH, "/api/change-password", "POST",
+                           {"oldPassword": "pw123456", "newPassword": "newpw12345"})
+        check("没带登录令牌 → 401（不能凭用户名改别人密码）", code == 401, "http=%s" % code)
+
+        code, d, _h = call(AUTH, "/api/change-password", "POST",
+                           {"oldPassword": "pw123456", "newPassword": "newpw12345"},
+                           token=tk_old)
+        tk_new = (d.get("data") or {}).get("access_token") or ""
+        check("改密成功返回 status=ok 且带一张新令牌",
+              code == 200 and d.get("status") == "ok" and bool(tk_new), str(d)[:140])
+        check("新密码能登录、旧密码登不上",
+              bool(login_ok(AUTH, "pwuser", "newpw12345"))
+              and not login_ok(AUTH, "pwuser", "pw123456"))
+        check("当前设备拿到的令牌继续可用（改完不用重新登录）",
+              call(AUTH, "/api/get-account", token=tk_new)[0] == 200)
+        check("改密前签发的旧令牌立刻失效（其它设备被踢下线）",
+              call(AUTH, "/api/get-account", token=tk_old)[0] == 401,
+              "http=%s" % call(AUTH, "/api/get-account", token=tk_old)[0])
+        check("改密后 AI 接口同样认新令牌、拒旧令牌",
+              call(AI, "/ai/quota", token=tk_new)[0] == 200
+              and call(AI, "/ai/quota", token=tk_old)[0] == 401)
+        # 改了密码，但资料/额度不该受影响
+        _c, d, _h = call(AUTH, "/api/get-account", token=tk_new)
+        check("改密不影响账号资料（id/name 不变）",
+              (d.get("data") or {}).get("name") == "pwuser", str(d)[:120])
 
         print("=" * 64)
         print("通过 %d 项，失败 %d 项" % (len(PASS), len(FAIL)))

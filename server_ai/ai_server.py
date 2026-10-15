@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-轻提词 · AI 中转服务（4.1.7）
+轻提词 · AI 中转服务（4.1.8）
 ============================================================
 在 4.0.0 的「纯转发」版本上补上：鉴权 / 额度 / 会员 / 订单。
 4.1.0 再把第三方账号系统 Casdoor 换成内置账号模块（自建注册/登录/凭证校验），
@@ -38,6 +38,11 @@
   于是读接口（need()）在网络层失败时**自动重试一次**（紧接着重发必成功），
   并且概览页加载失败时给出可读提示，不再留一整块空白。
   写接口（确认收款/打回/重置…）绝不自动重试，避免重复执行。
+4.1.8 账号兼容层新增 POST /api/change-password：用户终于可以自己改密码了
+  （以前只能"联系客服"）。必须带登录令牌 + **必须验原密码**，
+  新密码 8~128 位且不能与原密码相同；改完 tokenVer +1 把其它设备的旧令牌踢下线，
+  同时返回一张新令牌，让当前这台设备不用重新登录。
+  身份只从令牌取（不接受客户端传 uid/用户名），失败话术不区分账号是否存在。
 
 设计要点
   · 鉴权：客户端必须带 Casdoor access_token（Authorization: Bearer xxx），
@@ -70,6 +75,7 @@
   POST /api/login/oauth/access_token    登录（form-urlencoded）-> 自签 HS256 JWT
   GET  /api/get-account                 校验登录态 / 取用户对象（只白名单输出）
   POST /api/update-user                 改资料（只接受 displayName / avatar）
+  POST /api/change-password             用户自己改密码（4.1.8：验原密码 + 踢掉其它设备）
   POST /api/upload-resource             头像上传（multipart，≤2MB，按魔数校验）
   GET  /avatar/<uid>.<ext>              头像文件
   POST /ai/admin/account/list|create|resetpwd|status|kick|note   后台账号管理
@@ -146,7 +152,7 @@ PORT = int(os.environ.get("MP_PORT", "2581"))
 CASDOOR_URL = os.environ.get("MP_CASDOOR_URL", "http://127.0.0.1:2580").rstrip("/")
 
 # ---- 4.1.0 自建账号模块 ----
-VERSION = "4.1.7"
+VERSION = "4.1.8"
 # casdoor：令牌拿去问 Casdoor（4.0.3 的行为，默认，便于随时回滚）
 # builtin：令牌本地校验，并额外监听 MP_AUTH_PORT（客户端写死的 2580）
 AUTH_MODE = (os.environ.get("MP_AUTH_MODE", "casdoor") or "casdoor").strip().lower()
@@ -3870,6 +3876,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/update-user":
             self._api_update_user()
             return
+        if path == "/api/change-password":
+            self._api_change_password()
+            return
         if path == "/api/upload-resource":
             self._api_upload_resource()
             return
@@ -3994,6 +4003,70 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"status": "error", "msg": str(e)}, 200)
             return
         self._json({"status": "ok"}, 200)
+
+    def _api_change_password(self):
+        """POST /api/change-password —— 用户自己改密码（4.1.8）。
+
+        形状照 Casdoor：{"status": "ok"|"error", "msg": ..., "data": ...}，msg 可直接给用户看。
+
+        安全约定（都是刻意这么写的）：
+          · 必须带登录令牌；身份**只**从令牌取，绝不接受客户端传 uid / 用户名，
+            否则就是"拿着自己的令牌改别人的密码"；
+          · **必须验原密码** —— 手机/电脑被临时借用时，不能直接就把密码改掉；
+          · 新密码 8~128 位（与注册同一套规则），且不能与原密码相同；
+          · 改完 tokenVer +1：其它设备上的旧令牌立刻失效（被踢下线），
+            同时**返回一个用新 ver 签发的令牌**，让当前这台设备不用重新登录；
+          · 失败信息不区分"账号不存在"与"原密码错误"（账号枚举防护，与登录一致）。
+        """
+        try:
+            uid, name = resolve_user(self.store, self._token())
+        except AuthError as e:
+            self._json({"status": "error", "msg": e.message}, 401)
+            return
+        body = self._body()
+        old = body.get("oldPassword")
+        new = body.get("newPassword")
+        if old is None:
+            old = body.get("old_password") or ""
+        if new is None:
+            new = body.get("new_password") or ""
+        old = str(old or "")
+        new = str(new or "")
+
+        _uid2, acc = self.store.account_by_id(uid)
+        if not acc:
+            self._json({"status": "error", "msg": "账号不存在"}, 200)
+            return
+        if not verify_pwd(old, acc.get("pwd") or DUMMY_PWD_HASH):
+            log("改密失败（原密码不正确）：%s" % name)
+            self._json({"status": "error", "msg": "原密码不正确"}, 200)
+            return
+        if len(new) < 8:
+            self._json({"status": "error", "msg": "新密码至少 8 位"}, 200)
+            return
+        if len(new) > 128:
+            self._json({"status": "error", "msg": "新密码最长 128 位"}, 200)
+            return
+        if new == old:
+            self._json({"status": "error", "msg": "新密码不能与原密码相同"}, 200)
+            return
+        try:
+            acc = self.store.account_set_password(uid, new, bump=True)
+        except ValueError as e:
+            self._json({"status": "error", "msg": str(e)}, 200)
+            return
+        # 旧令牌全部失效，给当前设备补一张新令牌（否则用户会被自己踢下线）
+        iat = int(now_ts())
+        token = sign_jwt({
+            "id": uid, "name": acc.get("name") or name, "sub": acc.get("name") or name,
+            "ver": int(acc.get("tokenVer", 1)), "iss": "microprompt",
+            "aud": "app-microprompt", "iat": iat, "exp": iat + JWT_TTL_SEC,
+        }, self.store.jwt_secret)
+        log("修改密码成功：%s（其它设备的旧令牌已失效）" % name)
+        self._json({"status": "ok", "data": {
+            "access_token": token, "token_type": "Bearer",
+            "expires_in": JWT_TTL_SEC, "tokenVer": int(acc.get("tokenVer", 1)),
+        }}, 200)
 
     def _api_upload_resource(self):
         """POST /api/upload-resource —— 头像上传（multipart，≤2MB，按魔数校验）。"""
