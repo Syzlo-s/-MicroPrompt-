@@ -185,7 +185,13 @@ export default function MemberDialog({ onClose }: { onClose: () => void }) {
     try {
       const o = await claimOrder(order.id, authToken);
       setOrder(o);
-      setMsg("已提交，正在等待确认开通…");
+      // 管理员可能刚好把这笔订单打回了（没收到款）：此时状态已是 canceled，
+      // 不要再提示「正在等待确认开通」，否则用户会一直等一笔已经作废的订单
+      setMsg(
+        o.status === "canceled"
+          ? "这笔订单已被作废，请点「重新选套餐」再下单"
+          : "已提交，正在等待确认开通…",
+      );
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "提交失败，请稍后重试");
     } finally {
@@ -380,6 +386,25 @@ export default function MemberDialog({ onClose }: { onClose: () => void }) {
                         onClick={() => void handleClaim()}
                       >
                         {busy ? "提交中…" : "我已完成支付"}
+                      </button>
+                    </div>
+                  </>
+                ) : order.status === "canceled" ? (
+                  <>
+                    <div className="member-waiting">
+                      这笔订单已被作废（管理员没有收到款项），不会开通会员。
+                      <br />
+                      如果你确实已经付款，请把订单号发给客服核对：{SUPPORT_EMAIL}
+                    </div>
+                    <div className="member-actions">
+                      <button
+                        className="btn btn-primary"
+                        onClick={() => {
+                          setMsg("");
+                          setOrder(null);
+                        }}
+                      >
+                        重新选套餐
                       </button>
                     </div>
                   </>
