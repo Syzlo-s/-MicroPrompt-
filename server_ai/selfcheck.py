@@ -93,8 +93,8 @@ def main():
         print(OK + "服务在跑：version=%s mock=%s authMode=%s 账号数=%s"
               % (d.get("version"), d.get("mock"), auth_mode or "（旧版无此字段）",
                  d.get("accounts")))
-        if d.get("version") != "4.1.4":
-            print(WARN + "版本不是 4.1.4（当前 %s）——可能还是旧代码" % d.get("version"))
+        if d.get("version") != "4.1.7":
+            print(WARN + "版本不是 4.1.7（当前 %s）——可能还是旧代码" % d.get("version"))
             fails += 1
     else:
         if code in (404, 501):

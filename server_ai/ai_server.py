@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-轻提词 · AI 中转服务（4.1.4）
+轻提词 · AI 中转服务（4.1.7）
 ============================================================
 在 4.0.0 的「纯转发」版本上补上：鉴权 / 额度 / 会员 / 订单。
 4.1.0 再把第三方账号系统 Casdoor 换成内置账号模块（自建注册/登录/凭证校验），
@@ -25,6 +25,19 @@
   （页面 #f8fafc / 卡片 #fff / 描边 #eef2f7）、12~16px 圆角、白底细描边按钮、
   柔和阴影；暗色改成中性深色（#0f172a / #111827），图表按主题取色。
   功能一行没减（六个页签、2 秒实时、暗色、抽屉、批量、CSV、打回都在）。
+4.1.5 修概览页布局 bug：`.grid.side` 这个类名同时命中了左侧栏的 `.side`
+  （width:236px / height:100vh / position:sticky），于是「近 14 天 AI 调用」趋势图
+  和「额度分布」两张卡片被挤成 236px 宽的窄条（图表实际只有 81px 宽、额度分布 38px 宽）。
+  改名 `.grid.split`，并补上"概览卡片宽度必须占满内容区"的回归断言。
+4.1.6 修「后台偶发空白」第一层：HTTP/1.0 的响应原来不带 Connection 头，
+  浏览器/中间代理会把连接放回池子复用，复用到服务端已关闭的 socket 时响应被截断
+  （net::ERR_CONTENT_LENGTH_MISMATCH），概览页 KPI 与图表整块不出来。
+  统一在 end_headers() 里补 `Connection: close`，明确"短连接、别复用"。
+4.1.7 修「后台偶发空白」第二层（真正常见的那种）：本机代理会把 HTTP/1.0 的
+  响应截断（实测走代理时每 4 次加载有 2~3 次失败，直连 0 次），
+  于是读接口（need()）在网络层失败时**自动重试一次**（紧接着重发必成功），
+  并且概览页加载失败时给出可读提示，不再留一整块空白。
+  写接口（确认收款/打回/重置…）绝不自动重试，避免重复执行。
 
 设计要点
   · 鉴权：客户端必须带 Casdoor access_token（Authorization: Bearer xxx），
@@ -133,7 +146,7 @@ PORT = int(os.environ.get("MP_PORT", "2581"))
 CASDOOR_URL = os.environ.get("MP_CASDOOR_URL", "http://127.0.0.1:2580").rstrip("/")
 
 # ---- 4.1.0 自建账号模块 ----
-VERSION = "4.1.4"
+VERSION = "4.1.7"
 # casdoor：令牌拿去问 Casdoor（4.0.3 的行为，默认，便于随时回滚）
 # builtin：令牌本地校验，并额外监听 MP_AUTH_PORT（客户端写死的 2580）
 AUTH_MODE = (os.environ.get("MP_AUTH_MODE", "casdoor") or "casdoor").strip().lower()
@@ -1548,7 +1561,7 @@ ADMIN_PAGE = r"""<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>轻提词 · AI 服务后台</title>
 <!--
-  轻提词管理后台（4.1.4：与客户端同源的简洁配色 / 桌面优先 / 2 秒实时）
+  轻提词管理后台（4.1.7：与客户端同源的简洁配色 / 桌面优先 / 2 秒实时）
   ------------------------------------------------------------------
   · 这个文件是「源文件」，由 sync_admin_page.py 注入 ai_server.py 的 ADMIN_PAGE 常量，
     服务端运行时**不读盘**（单文件部署，不依赖相对路径），改完必须跑一次：
@@ -1557,6 +1570,13 @@ ADMIN_PAGE = r"""<!doctype html>
   · 配色规则（4.1.4 起）：与桌面客户端 src/styles.css 同一套 —— 只用一种强调色
     靛蓝 #6366f1（--brand），其余全靠 slate 灰阶 + 1px 描边分层；
     禁止渐变 / 彩色大色块 / 装饰性插画，圆角 12~16px，阴影柔和。
+  · 类名规则（4.1.5 起）：左侧栏占用了 `.side`，内容区**不要**再用 side 当修饰类
+    （`.grid.side` 会命中 .side 的 width:236px / height:100vh / position:sticky，
+    把概览页两张卡片挤成窄条）；两栏栅格用 `.grid.split`。
+  · 网络规则（4.1.7 起）：**读接口**（need()）在网络层失败时自动重试一次，
+    写接口（api()）绝不重试；失败时页面必须给出可读的提示，不允许留空白块。
+    背景：本服务是 HTTP/1.0 短连接，经过本机代理时响应偶发被截断
+    （net::ERR_CONTENT_LENGTH_MISMATCH），不重试的话概览页会整块空白。
   · 纯离线：不引用任何 CDN / 外部字体 / 图表库，图表是手写 SVG（按主题取色）。
   · 密钥只存在使用者自己的浏览器 localStorage，每次请求走 X-Admin-Key 头。
   · 为了回归测试（tests/admin_panel_smoke.mjs）能点得动，保留了这些钩子：
@@ -1603,7 +1623,9 @@ ADMIN_PAGE = r"""<!doctype html>
   .mono { font-family:ui-monospace, Consolas, "SF Mono", Menlo, monospace; font-size:12px; }
   .sr { position:absolute; left:-9999px; top:0; width:1px; height:1px; overflow:hidden; }
 
-  /* ---------------- 骨架 ---------------- */
+  /* 骨架。注意：左侧栏的类名就叫 .side，所以内容区的栅格**不能**再用 side 当修饰类
+     （4.1.2 的 `.grid.side` 会同时命中 .side 的 width:236px / height:100vh / position:sticky，
+     结果概览页的趋势图和额度分布被挤成 236px 宽的窄条；4.1.5 改名为 .grid.split）。 */
   .app { display:flex; min-height:100vh; }
   .side {
     width:236px; flex:0 0 236px; background:var(--card); border-right:1px solid var(--line-soft);
@@ -1710,8 +1732,8 @@ ADMIN_PAGE = r"""<!doctype html>
   .grid.k4 { grid-template-columns:repeat(4, minmax(0,1fr)); }
   .grid.k3 { grid-template-columns:repeat(3, minmax(0,1fr)); }
   .grid.k2 { grid-template-columns:repeat(2, minmax(0,1fr)); }
-  .grid.side { grid-template-columns:minmax(0,1.55fr) minmax(0,1fr); }
-  @media (max-width:1180px) { .grid.k4 { grid-template-columns:repeat(2,minmax(0,1fr)); } .grid.side { grid-template-columns:1fr; } }
+  .grid.split { grid-template-columns:minmax(0,1.55fr) minmax(0,1fr); }
+  @media (max-width:1180px) { .grid.k4 { grid-template-columns:repeat(2,minmax(0,1fr)); } .grid.split { grid-template-columns:1fr; } }
   @media (max-width:820px) {
     .app { flex-direction:column; }
     .side { width:auto; flex:none; height:auto; position:static; border-right:0; border-bottom:1px solid var(--line-soft); }
@@ -1931,7 +1953,7 @@ ADMIN_PAGE = r"""<!doctype html>
       <!-- ---------------- 概览 ---------------- -->
       <section class="page active" id="page-dash">
         <div class="grid k4" id="kpiRow"></div>
-        <div class="grid side">
+        <div class="grid split">
           <div class="card">
             <div class="card-hd">
               <h2>近 14 天 AI 调用</h2>
@@ -2302,7 +2324,18 @@ ADMIN_PAGE = r"""<!doctype html>
   }
   function need(key, focus) {
     if (!key) return Promise.resolve({ status: 0, data: { ok: false, error: '请先填写管理员密钥' } });
-    return api(key, focus || {});
+    // 4.1.7：**只给读接口**自动重试一次。
+    // 为什么要重试：本服务是 HTTP/1.0 短连接，经过某些本机代理（例如抓包/科学上网用的
+    // localhost 代理）时响应会被截断，浏览器直接报 net::ERR_CONTENT_LENGTH_MISMATCH，
+    // 表现就是后台偶发空白（概览页 KPI 与图表整块不出来）。实测线上每几次加载中一次，
+    // 且紧接着重发就成功，所以一次重试足够。
+    // 写接口（确认收款/打回/重置密码…）**绝不自动重试** —— 万一第一次其实已经成功，
+    // 重发会重复执行（多写一条审计、多开一次会员）。
+    return api(key, focus || {}).catch(function (e) {
+      return new Promise(function (r) { setTimeout(r, 400); }).then(function () {
+        return api(key, focus || {});
+      }).catch(function () { throw e; });
+    });
   }
 
   /* ---------------------------------------------------------- 弹窗 */
@@ -3143,7 +3176,17 @@ ADMIN_PAGE = r"""<!doctype html>
       renderDash();
       paintBadges();
       cb && cb();
-    }).catch(function (e) { say('无法连接服务：' + e, 'err'); cb && cb(); });
+    }).catch(function (e) {
+      say('无法连接服务（已自动重试一次）：' + e, 'err');
+      // 4.1.7：不要再留一整块空白 —— 明确告诉人「没加载出来 + 怎么办」
+      if (!S.kpi) {
+        $('kpiRow').innerHTML = '<div class="card kpi">' +
+          '<div class="k-top"><span class="k-ico red">!</span>概览数据没加载出来</div>' +
+          '<div class="k-val">—</div><div class="k-sub">点右上角 <b>↻</b> 重试；' +
+          '若反复失败，多半是本机代理把 HTTP 响应截断了（见 README「后台偶发空白」）</div></div>';
+      }
+      cb && cb();
+    });
   }
   function loadUsers(cb) {
     need('/ai/admin/users').then(function (res) {
@@ -3430,6 +3473,22 @@ def call_deepseek(text, system_prompt):
 class Handler(BaseHTTPRequestHandler):
     server_version = "MicroPromptAI/" + VERSION
     store = None  # 由 main 注入
+
+    def end_headers(self):
+        """统一补一行 Connection: close（4.1.6）。
+
+        为什么必须写：本服务是 HTTP/1.0（BaseHTTPRequestHandler 默认），
+        默认行为就是"一次请求一条连接、回完即关"，但**响应头里没有明说**。
+        Chrome 遇到没有 Connection 头的 HTTP/1.0 响应时，会把这条连接放回连接池
+        继续复用；等它复用到一个服务端已经关掉的 socket 上，响应就会被截断，
+        控制台报 net::ERR_CONTENT_LENGTH_MISMATCH —— 表现为后台偶发空白
+        （概览页 KPI/图表整块不出来，只弹一句"无法连接服务"）。
+        实测：线上面板每几次加载就会中一次；Node/curl 不会（它们不复用 HTTP/1.0 连接）。
+        明说 close 之后浏览器不再复用，这个竞态就没了。顺带也让 send_header
+        把 close_connection 置为 True，与本服务"短连接"的定位一致。
+        """
+        self.send_header("Connection", "close")
+        BaseHTTPRequestHandler.end_headers(self)
 
     # ---- 基础输出 ----
     def _cors(self):
