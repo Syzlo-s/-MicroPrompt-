@@ -608,8 +608,8 @@ def main():
         check("accounts.json 进入启动备份名单（不能成为唯一没有兜底的数据）",
               any(f.startswith("accounts.") for f in files), str(files[:8]))
         code, d, _h = call(rest_ai, "/ai/health")
-        check("/ai/health 报告版本 4.1.4 与账号数",
-              code == 200 and d.get("version") == "4.1.4"
+        check("/ai/health 报告版本 4.1.7 与账号数",
+              code == 200 and d.get("version") == "4.1.7"
               and int(d.get("accounts") or 0) >= 2 and d.get("authMode") == "builtin",
               str(d)[:140])
 

@@ -241,6 +241,7 @@ class CDP {
     });
   }
   on(m, fn) { this.handlers.set(m, fn); }
+  off(m, fn) { if (!fn || this.handlers.get(m) === fn) this.handlers.delete(m); }
   send(method, params = {}) {
     const id = ++this.id;
     return new Promise((resolve, reject) => {
@@ -263,6 +264,7 @@ const exceptions = [];
 const badResponses = [];
 let authErrorExpected = false; // 「密钥填错」那一段会故意产生 403，不算异常
 let badRequestExpected = false; // 故意触发的 400（如重名新建），也不算异常
+let netFailExpected = false;   // 4.1.7 的「掐断读接口」那一段：浏览器必然记一条 ERR_CONNECTION_CLOSED
 let nextPromptText = null;     // 下一次 prompt() 要回填的文本（4.1.0 的「备注」用它）
 cdp.on('Page.javascriptDialogOpening', async (p) => {
   dialogs.push(p.message);
@@ -281,6 +283,7 @@ cdp.on('Log.entryAdded', (p) => {
   if (url.includes('favicon')) return; // 浏览器自动请求站点图标，404 与面板无关
   if (authErrorExpected && /403|Forbidden/.test(e.text || '')) return;
   if (badRequestExpected && /400|Bad Request/.test(e.text || '')) return;
+  if (netFailExpected && /net::ERR_/.test(e.text || '')) return; // 我们自己掐断的请求
   exceptions.push('console: ' + (e.text || '') + (url ? '  <' + url + '>' : ''));
 });
 cdp.on('Network.responseReceived', (p) => {
@@ -775,6 +778,74 @@ if (!REMOTE) {
   check('配色与客户端一致：品牌靛蓝 #6366f1、页面底色 slate-50、无 INS 渐变色',
     brand === '#6366f1' && bodyBg === 'rgb(248, 250, 252)' && gradLeft === 0,
     brand + ' / ' + bodyBg + ' / 渐变 ' + gradLeft + ' 处');
+  // 4.1.5：概览页「趋势图 + 额度分布」那一行必须铺满内容区
+  //（4.1.2 起这里踩了类名冲突：.grid.side 命中了左侧栏的 .side = width:236px / height:100vh，
+  //  两张卡片被挤成 236px 宽，趋势图实际只有 81px —— 所以这条断言要卡"宽度占比"，不是"存在"）
+  await nav('dash');
+  const rowBox = await ev(`(() => {
+    const dash = document.getElementById('page-dash');
+    const row = dash.querySelector('.grid.split');
+    const cards = row ? Array.from(row.children) : [];
+    const chart = document.querySelector('#chart svg');
+    const dist = document.getElementById('dist');
+    const r = (el) => el ? el.getBoundingClientRect() : null;
+    return {
+      pageW: Math.round(dash.getBoundingClientRect().width),
+      rowW: row ? Math.round(r(row).width) : 0,
+      rowH: row ? Math.round(r(row).height) : 0,
+      winH: window.innerHeight,
+      cards: cards.map((c) => Math.round(r(c).width)),
+      chartW: chart ? Math.round(r(chart).width) : 0,
+      chartH: chart ? Math.round(r(chart).height) : 0,
+      distW: dist ? Math.round(r(dist).width) : 0,
+    };
+  })()`);
+  check('概览页「趋势图 + 额度分布」两栏铺满内容区（每栏 ≥ 内容区 25%）',
+    rowBox.rowW >= rowBox.pageW * 0.98 && rowBox.cards.length === 2
+    && rowBox.cards.every((w) => w >= rowBox.pageW * 0.25),
+    `行宽=${rowBox.rowW}/${rowBox.pageW} 两栏=${JSON.stringify(rowBox.cards)}`);
+  check('概览趋势图不再被挤成窄条（图宽 ≥ 500px、高 190px）',
+    rowBox.chartW >= 500 && rowBox.chartH === 190,
+    `图 ${rowBox.chartW}x${rowBox.chartH} 额度分布宽=${rowBox.distW}`);
+  check('概览两栏行不再是 100vh 的侧栏高度（没继承左侧栏的 sticky/height）',
+    rowBox.rowH < rowBox.winH * 0.9, `行高=${rowBox.rowH} 视口高=${rowBox.winH}`);
+  // 4.1.7：读接口被"掐断"时要自动重试，重试成功就正常出图（模拟代理截断响应）
+  netFailExpected = true;
+  await cdp.send('Fetch.enable',
+    { patterns: [{ urlPattern: '*/ai/admin/overview', requestStage: 'Request' }] });
+  let cutCount = 0;
+  const onPaused = async (p) => {
+    try {
+      if (cutCount < 1) {
+        cutCount += 1;
+        await cdp.send('Fetch.failRequest', { requestId: p.requestId, errorReason: 'ConnectionClosed' });
+      } else {
+        await cdp.send('Fetch.continueRequest', { requestId: p.requestId });
+      }
+    } catch { /* 连接关了就算了 */ }
+  };
+  cdp.on('Fetch.requestPaused', onPaused);
+  await ev(`document.getElementById('refresh').click()`);
+  await sleep(3500);
+  const afterRetry = await ev(`({ cards: document.querySelectorAll('#kpiRow > .card').length,
+                                  txt: document.getElementById('kpiRow').textContent.slice(0, 40) })`);
+  check('读接口被截断一次时自动重试，概览 KPI 照常出图（4.1.7）',
+    cutCount === 1 && afterRetry.cards === 4,
+    `掐断 ${cutCount} 次，重试后卡片数=${afterRetry.cards} 文本=${afterRetry.txt}`);
+  // 连续失败时也不能留一整块空白：旧数据继续显示 + 明确提示
+  cutCount = -100;   // 之后所有 overview 请求都失败
+  await ev(`document.getElementById('refresh').click()`);
+  await sleep(3500);
+  const afterFail = await ev(`({ cards: document.querySelectorAll('#kpiRow > .card').length,
+                                body: document.body.textContent })`);
+  check('概览彻底加载失败时旧数据仍在、并给出可读提示（4.1.7）',
+    afterFail.cards === 4 && afterFail.body.indexOf('无法连接服务') >= 0,
+    `卡片数=${afterFail.cards} 提示=${afterFail.body.indexOf('无法连接服务') >= 0}`);
+  cdp.off('Fetch.requestPaused', onPaused);
+  await cdp.send('Fetch.disable');
+  netFailExpected = false;
+  await nav('dash');
+  await sleep(1200);
   // 窄屏（手机应急确认收款）也要不炸
   await cdp.send('Emulation.setDeviceMetricsOverride',
     { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });

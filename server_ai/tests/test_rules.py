@@ -32,6 +32,7 @@
 依赖：只有 Python3 标准库；不会调用 DeepSeek（全程 MP_MOCK=1），不会碰真实的 data/。
 """
 
+import http.client
 import json
 import os
 import re
@@ -448,6 +449,44 @@ def main():
         check("后台配色与客户端一致、没有渐变（4.1.4）",
               "--brand:#6366f1" in html and "--bg:#f8fafc" in html
               and "linear-gradient" not in html.split("<style>")[1].split("</style>")[0], "")
+        # 4.1.5：内容区栅格不能再用 .side 当修饰类（会命中左侧栏的 width:236px / height:100vh）
+        # 注意：注释里提到 `.grid.side` 是为了留案发记录，所以只卡"规则"和"元素"，不卡字符串出现
+        check("概览页两栏栅格用 .grid.split，不再误用 .grid.side（4.1.5）",
+              'class="grid split"' in html and ".grid.split {" in html
+              and 'class="grid side"' not in html and ".grid.side {" not in html, "")
+        # 4.1.6：每个响应都要明说 Connection: close
+        # （本服务是 HTTP/1.0 短连接；不明说的话浏览器/中间代理会把连接放回池子复用，
+        #   复用到已关闭的 socket 上就报 ERR_CONTENT_LENGTH_MISMATCH、页面偶发空白）
+        # 注意：必须用 http.client 直连 —— urllib 会走系统代理，读到的 Connection
+        # 是代理自己加的那一份（本机实测：代理把它改写成 keep-alive），测不到服务端真实行为。
+        conn_hdrs = []
+        _host, _port = "127.0.0.1", int(MAIN.rsplit(":", 1)[1])
+        for _path, _method in (("/admin", "GET"), ("/ai/health", "GET"), ("/ai/admin/poll", "POST")):
+            try:
+                _c = http.client.HTTPConnection(_host, _port, timeout=10)
+                _c.request(_method, _path, b"{}" if _method == "POST" else None,
+                           {"Content-Type": "application/json", "X-Admin-Key": ADMIN_KEY})
+                _r = _c.getresponse()
+                _body = _r.read()
+                _declared = _r.getheader("Content-Length")
+                _conn = _r.getheader("Connection")
+                _c.close()
+                # 顺带验一件事：声明长度必须等于实收字节（截断在这里就会被抓到）
+                _lenok = (_declared is not None and int(_declared) == len(_body))
+                conn_hdrs.append((_path, _conn, _lenok))
+            except Exception as _e:  # noqa: BLE001
+                conn_hdrs.append((_path, "ERR:%s" % _e, False))
+        check("所有响应都带 Connection: close 且长度自洽（4.1.6：防复用短连接导致响应被截断）",
+              all(str(v).lower() == "close" and ok for _p, v, ok in conn_hdrs),
+              ", ".join("%s=%s%s" % (p, v, "" if ok else "(长度不符)") for p, v, ok in conn_hdrs))
+        # 4.1.7：读接口失败要自动重试一次，写接口绝不能自动重试（避免重复扣款/重复开通）
+        check("读接口带自动重试、写接口不重试（4.1.7）",
+              "已自动重试一次" in html and "概览数据没加载出来" in html
+              and html.count("api(key, focus || {})") >= 2
+              and "need('/ai/admin/confirm'" not in html
+              and "need('/ai/admin/reject'" not in html
+              and "need('/ai/admin/grant'" not in html
+              and "need('/ai/admin/reset'" not in html, "")
         # 面板是手写的 HTML+JS：JS 里 $("xxx") / $('xxx') 引用的 id 必须真的存在，
         # 否则点按钮静默无效（4.1.2 起 JS 统一用单引号，所以两种引号都要认）
         ids_in_html = set(re.findall(r'id="([A-Za-z0-9_\-]+)"', html))
