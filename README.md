@@ -86,10 +86,30 @@ python ai_server.py        # 主服务 2581；账号接口额外监听 2580
 
 ### 6. 打包成 exe（可选）
 
+**发布用的路线是 Inno Setup**（第 3 步的 `setup.iss`，历史版本 v3.0.0~v4.1.8 都是它）：
+
 ```powershell
-$env:CARGO_TARGET_DIR = 'D:\mp4target'     # 必须是纯英文路径，原因见下表
-npm run tauri build                        # 产物：<target>\release\microprompt-v4.exe + NSIS 安装包
+$env:CARGO_TARGET_DIR = 'D:\mp4target'                    # 必须是纯英文路径，原因见下表
+cargo build --release --features tauri/custom-protocol     # 或用 .\build.ps1（同一件事）
+& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" src-tauri\inno\setup.iss
+# 产物：release\installer\轻提词安装包_v<版本>.exe（约 3.3 MB）
 ```
+
+**打完包必须真机验一次再发**（4.1.8 踩过坑：`npm run tauri build` 出来的 NSIS 包文件在、
+版本号也对，但静默安装什么都不装、手动双击报「无法打开要写入的文件」）：
+
+```powershell
+node scripts/verify-installer.mjs     # 真机静默装一次 → 校验版本/界面 → 卸载
+```
+
+另一条路线是 Tauri 自带的 NSIS（`bundle.targets=["nsis"]`）：
+
+```powershell
+npm run tauri build        # 产物：<target>\release\microprompt-v4.exe + NSIS 安装包
+```
+
+> ⚠️ 4.1.8 实测这条 NSIS 路线**不可靠**：同一个包先能装、后来说什么都不装（静默退出码仍是 0），
+> 换 Inno 重打一次就正常了，根因没查到。所以发布走 Inno，NSIS 只当备选。
 
 ### 7. 常见坑（踩过并已解决）
 
@@ -100,6 +120,9 @@ npm run tauri build                        # 产物：<target>\release\microprom
 | 提示缺少 `WebView2Loader.dll` | Tauri 运行时 DLL 没随 exe 一起拷 | 与 exe 放同一目录（`build.ps1` 会自动复制） |
 | 登录报「无法连接服务器」 | 账号服务（2580）没起来 | 确认服务端 `MP_AUTH_MODE=builtin` 且 2580 在监听 |
 | 打包出的包"能装能开但登录凭据为空" | `.env` 缺失或没填 | 构建前先跑 `npm run preflight`（会一次性核对凭据与 6 处客户端版本号） |
+| 双击安装包弹「Windows 已保护你的电脑」 | 安装包**没有数字签名**，SmartScreen 对「无法识别的应用」一律先拦 | 点「更多信息」→「仍要运行」；或用同目录的 `双击安装_轻提词4.1.8.bat`（由 cmd 拉起，SmartScreen 不拦） |
+| 安装包能生成、大小也对，但装不上去 | 4.1.8 实测：NSIS 路线打出来的包**偶发不可用**（静默安装什么都不装、退出码仍是 0；手动双击报「无法打开要写入的文件」） | 换 Inno 路线重打（`ISCC.exe src-tauri\inno\setup.iss`），并用 `node scripts/verify-installer.mjs` 真机验一次再发 |
+| `.\build.ps1` 报 `Join-Path ... NullNotAllowed` | `build.ps1` 曾是 UTF-8 无 BOM，Windows PowerShell 5.1 按 GBK 读 → 中文注释吃掉换行、脚本被解析坏 | 已修（加了 BOM）；若你改了该文件，记得存成 **UTF-8 with BOM** |
 
 ## 技术栈
 
@@ -210,11 +233,14 @@ npm run build:checked
 #    4.1.8 两边一起发：客户端加了自助改密与设置页重设计，所以版本串统一到 4.1.8）。
 #    preflight 只要求它「不落后于客户端」，不要求相等。
 #
-# ℹ️ 4.1.8 实况（两条路线并存，别再搞混）：
-#    实际发布的 `轻提词安装包_v4.1.8.exe` 是 `npm run tauri build`（NSIS，见 tauri.conf.json
-#    的 bundle.targets=["nsis"]）产出的 `轻提词_4.1.8_x64-setup.exe` 改名而来，约 1.7 MB；
-#    上面这条 Inno 路线（setup.iss）同样可用、版本串已同步到 4.1.8，产物约 3.5 MB。
-#    两条任选其一即可，但**改版本号时两条的版本串都要同步** —— preflight 会核对 setup.iss。
+# ℹ️ 4.1.8 实况（两条路线，发布走 Inno）：
+#    实际发布的 `轻提词安装包_v4.1.8.exe` 是 **Inno Setup** 编译出来的（`ISCC.exe src-tauri\inno\setup.iss`），
+#    3,498,250 字节（约 3.3 MB），MD5 963bc1f92570c3d7ba6c296cb9432aac；
+#    另一条 `npm run tauri build` 的 NSIS 路线（tauri.conf.json 的 bundle.targets=["nsis"]）
+#    产出 `轻提词_4.1.8_x64-setup.exe`（约 1.7 MB）—— 4.1.8 实测这个包**不可靠**
+#    （同一份文件先能装、后来静默安装什么都不装），所以这次没用它。
+#    **发版前两条都要同步版本串** —— preflight 会核对 setup.iss；打完包再跑
+#    `node scripts/verify-installer.mjs`（真机装一次、启动一次、卸载一次）才允许发出去。
 #    历史教训：4.1.0 / 4.1.1 两次发版都漏改了 setup.iss，它一度停在 4.0.3（2026-10-14 已修正）。
 ```
 
