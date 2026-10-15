@@ -763,8 +763,18 @@ if (!REMOTE) {
   await ev(`document.getElementById('themeBtn').click()`);
   const darkCard = await ev(`getComputedStyle(document.documentElement).getPropertyValue('--card').trim()`);
   await ev(`document.getElementById('themeBtn').click()`);
-  check('明暗两套配色确实生效（--card 亮 #ffffff / 暗 #121212）',
-    lightCard === '#ffffff' && darkCard === '#121212', lightCard + ' / ' + darkCard);
+  check('明暗两套配色确实生效（--card 亮 #ffffff / 暗 #111827）',
+    lightCard === '#ffffff' && darkCard === '#111827', lightCard + ' / ' + darkCard);
+  // 4.1.4：配色必须跟桌面客户端同源（靛蓝品牌色 + slate 中性底），且不再有 INS 渐变色
+  const brand = await ev(`getComputedStyle(document.documentElement).getPropertyValue('--brand').trim()`);
+  const bodyBg = await ev(`getComputedStyle(document.body).backgroundColor`);
+  const gradLeft = await ev(`(() => {
+    const css = Array.from(document.styleSheets[0].cssRules).map(r => r.cssText).join('\\n');
+    return (css.match(/linear-gradient\\(45deg/g) || []).length;
+  })()`);
+  check('配色与客户端一致：品牌靛蓝 #6366f1、页面底色 slate-50、无 INS 渐变色',
+    brand === '#6366f1' && bodyBg === 'rgb(248, 250, 252)' && gradLeft === 0,
+    brand + ' / ' + bodyBg + ' / 渐变 ' + gradLeft + ' 处');
   // 窄屏（手机应急确认收款）也要不炸
   await cdp.send('Emulation.setDeviceMetricsOverride',
     { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });

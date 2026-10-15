@@ -444,6 +444,10 @@ def main():
         check("订单页带「打回」按钮与接口（4.1.3）",
               "/ai/admin/reject" in html and 'data-reject' in html
               and "打回" in html and "cancelReason" in html, "")
+        # 4.1.4：配色与桌面客户端同源（单一强调色靛蓝 + slate 中性底），不再有 INS 渐变
+        check("后台配色与客户端一致、没有渐变（4.1.4）",
+              "--brand:#6366f1" in html and "--bg:#f8fafc" in html
+              and "linear-gradient" not in html.split("<style>")[1].split("</style>")[0], "")
         # 面板是手写的 HTML+JS：JS 里 $("xxx") / $('xxx') 引用的 id 必须真的存在，
         # 否则点按钮静默无效（4.1.2 起 JS 统一用单引号，所以两种引号都要认）
         ids_in_html = set(re.findall(r'id="([A-Za-z0-9_\-]+)"', html))
