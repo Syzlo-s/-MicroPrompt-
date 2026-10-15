@@ -1,6 +1,6 @@
 ﻿; 轻提词 Inno Setup 安装脚本
 #define MyAppName "轻提词"
-#define MyAppVersion "4.1.1"
+#define MyAppVersion "4.1.8"
 #define MyAppPublisher "MicroPrompt"
 #define MyAppExeName "轻提词.exe"
 #define SrcRoot "D:\Desktop\桌面速记\轻提词V4.0\src-tauri"
@@ -21,7 +21,7 @@ WizardImageFile={#SrcRoot}\nsis\sidebarImage.bmp
 WizardSmallImageFile={#SrcRoot}\inno\small.png
 SetupIconFile={#SrcRoot}\icons\icon.ico
 OutputDir=D:\Desktop\桌面速记\轻提词V4.0\release\installer
-OutputBaseFilename=轻提词安装包_v4.1.1
+OutputBaseFilename=轻提词安装包_v4.1.8
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog

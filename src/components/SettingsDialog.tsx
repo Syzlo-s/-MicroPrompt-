@@ -862,7 +862,7 @@ export default function SettingsDialog({
 
   const viewAbout = (
     <div className="set-section set-about">
-      <div className="set-hint">轻提词 测试 4.1.1 · 本地桌面速记 · AI 额度与会员制</div>
+      <div className="set-hint">轻提词 测试 4.1.8 · 本地桌面速记 · AI 额度与会员制</div>
       <div className="set-hint">
         AI 免费版每天 {aiQuota?.freeQuota ?? 3} 次 · 日卡 ¥2（24 小时）/ 月卡 ¥8（30 天）
       </div>

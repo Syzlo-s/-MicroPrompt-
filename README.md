@@ -5,7 +5,7 @@ Tauri 2 + React 19 + TypeScript + Vite 桌面速记应用（Web 技术栈迁移�
 ## 🚀 10 分钟极速复现指南（评审快速上手）
 
 > 目标：从零到「窗口打开、能写笔记、能注册登录」**不超过 10 分钟**。
-> 下列命令均在 **Windows 10/11 x64 + PowerShell** 实测通过（客户端 v4.1.1 / 服务端 v4.1.8，2026-10-15）。
+> 下列命令均在 **Windows 10/11 x64 + PowerShell** 实测通过（客户端 v4.1.8 / 服务端 v4.1.8，2026-10-15）。
 
 ### 0. 前置环境（约 3 分钟）
 
@@ -206,13 +206,14 @@ npm run build:checked
 #    src\components\WelcomeScreen.tsx（欢迎页）
 #    —— `npm run preflight` 会一次性核对这 6 处
 # ℹ️ 服务端（server_ai\ai_server.py 的 VERSION）是**独立**版本号：服务端可以单独发版
-#    （例如 4.1.2 只重构了后台与接口，桌面端仍是 4.1.1、用户不用重装）。
+#    （例如 4.1.2~4.1.7 只改后台与接口，桌面端停在 4.1.1、用户不用重装；
+#    4.1.8 两边一起发：客户端加了自助改密与设置页重设计，所以版本串统一到 4.1.8）。
 #    preflight 只要求它「不落后于客户端」，不要求相等。
 #
-# ℹ️ 4.1.1 实况（两条路线并存，别再搞混）：
-#    实际发布的 `轻提词安装包_v4.1.1.exe` 是 `npm run tauri build`（NSIS，见 tauri.conf.json
-#    的 bundle.targets=["nsis"]）产出的 `轻提词_4.1.1_x64-setup.exe` 改名而来，约 1.7 MB；
-#    上面这条 Inno 路线（setup.iss）同样可用、版本串已同步到 4.1.1，产物约 3.5 MB。
+# ℹ️ 4.1.8 实况（两条路线并存，别再搞混）：
+#    实际发布的 `轻提词安装包_v4.1.8.exe` 是 `npm run tauri build`（NSIS，见 tauri.conf.json
+#    的 bundle.targets=["nsis"]）产出的 `轻提词_4.1.8_x64-setup.exe` 改名而来，约 1.7 MB；
+#    上面这条 Inno 路线（setup.iss）同样可用、版本串已同步到 4.1.8，产物约 3.5 MB。
 #    两条任选其一即可，但**改版本号时两条的版本串都要同步** —— preflight 会核对 setup.iss。
 #    历史教训：4.1.0 / 4.1.1 两次发版都漏改了 setup.iss，它一度停在 4.0.3（2026-10-14 已修正）。
 ```
@@ -223,8 +224,18 @@ npm run build:checked
 
 > 链接时若出现 `multiple non-default manifests` 警告，是 Tauri 2 + GNU 工具链的已知现象
 > （WebView2 清单与应用清单合并），Win10/11 已内置 WebView2 运行时，无影响。
-> 若要彻底规避中文路径问题，可安装 MSVC 工具链（VS Build Tools）后执行
-> `rustup default stable-x86_64-pc-windows-msvc`。
+>
+> ⚠️ **本仓库路径含中文（`桌面速记\轻提词V4.0`）时，GNU 工具链会直接编译失败**：
+> `dlltool: Can't create .lib file: ...\rustcXXXX\kernel32.dll_imports.lib: No such file or directory`
+> （dlltool 按 ANSI 代码页读参数，中文路径变成乱码）。4.1.8 发版实测可行的办法是
+> **把编译中间产物挪到纯英文目录**：
+> ```powershell
+> $env:CARGO_TARGET_DIR = 'D:\mp4target'   # 纯 ASCII 路径（与 build.ps1、§6 用的是同一个）
+> npm run tauri build                       # 前端照常在本目录构建
+> ```
+> 产物会出现在 `D:\mp4target\release\bundle\nsis\`。
+> 另一条路是装 MSVC 工具链（VS Build Tools）后 `rustup default stable-x86_64-pc-windows-msvc`，
+> 它不用 dlltool，也就没有中文路径问题。
 
 ## AI 额度与会员（4.1.0）
 
@@ -345,7 +356,7 @@ npm run build:checked
   平轨道 + 滑块下投影（边缘跳变 41 → 22，实测见 `比赛提交材料/02_演进记录`）
 - [ ] Phase 5（P3）**剩余部分**：CI 自动构建、增量更新、代码签名 —— **均未做**，目前发版全靠手工
 
-## 已知限制（客户端 v4.1.1 / 服务端 v4.1.8 · 2026-10-15 核对）
+## 已知限制（客户端 v4.1.8 / 服务端 v4.1.8 · 2026-10-15 核对）
 
 **界面 / 交互**
 
@@ -357,17 +368,17 @@ npm run build:checked
 
 **功能缺口**
 
-- **应用内「修改密码」已做好，但要等下一次客户端发版才生效**：服务端 4.1.8 已上线
-  `POST /api/change-password`，客户端源码里设置 → 用户 → 账号安全 → 「修改」会弹出二级界面
-  （原密码 / 新密码 / 确认，`src/components/ChangePasswordDialog.tsx`）；
-  已安装的 4.1.1 客户端那一行仍写着「如需修改密码，请联系客服」，
-  在那之前改密仍可由管理员在 `/admin` 点「重置密码」拿到一次性临时密码
+- **应用内「修改密码」从 4.1.8 客户端起可用**：设置 → 用户 → 账号安全 → 「修改」弹出二级界面
+  （原密码 / 新密码 / 确认，`src/components/ChangePasswordDialog.tsx`），改完**本机保持登录、
+  其它设备掉线**；服务端 `POST /api/change-password` 已上线。
+  仍在用 4.1.1 老客户端的用户，那一行还是「如需修改密码，请联系客服」，
+  也可以由管理员在 `/admin` 点「重置密码」拿到一次性临时密码
 - **支付是半自动**：用户点「我已完成支付」后，仍需管理员在 `/admin` 点「确认收款并开通」
   （或 `python3 admin_cli.py confirm <订单号>`）；支付通道回调接口已预留但未接；
   没收到钱时可以点 **「打回（没收到款）」** 作废该笔订单（4.1.3）
-- **「订单被打回」的客户端提示还没发给用户**：已安装的 4.1.1 客户端遇到作废订单会停在
-  「等待确认开通」页（不会再误扣费，重开「开通会员」弹窗即可重新下单）；明确提示与
-  「重新选套餐」按钮已写进源码（`src/components/MemberDialog.tsx`），**下次客户端发版才生效**
+- **「订单被打回」的客户端提示已在 4.1.8 客户端里**：作废订单会明确提示并给「重新选套餐」按钮
+  （`src/components/MemberDialog.tsx`）；仍在用 4.1.1 的用户遇到作废订单会停在「等待确认开通」页
+  （不会再误扣费，重开「开通会员」弹窗即可重新下单）
 - 旧版数据自动迁移（`%APPDATA%/DesktopNotesDev` → 新路径）尚未实现：本版直接读写旧路径，天然兼容
 - **后台只有亮色和客户端一致**：后台的暗色模式是它独有的（客户端目前只有亮色），
   以后客户端要加暗色，两边的颜色令牌得对齐一次（4.1.4）

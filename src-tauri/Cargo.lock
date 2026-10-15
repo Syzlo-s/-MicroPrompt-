@@ -1782,7 +1782,7 @@ dependencies = [
 
 [[package]]
 name = "microprompt-v4"
-version = "4.1.1"
+version = "4.1.8"
 dependencies = [
  "serde",
  "serde_json",

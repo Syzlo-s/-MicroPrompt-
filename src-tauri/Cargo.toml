@@ -1,6 +1,6 @@
 [package]
 name = "microprompt-v4"
-version = "4.1.1"
+version = "4.1.8"
 description = "轻提词 (MicroPrompt) V4.0 — Tauri + React 桌面速记"
 authors = ["MicroPrompt Team"]
 edition = "2021"
