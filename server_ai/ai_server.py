@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-轻提词 · AI 中转服务（4.1.3）
+轻提词 · AI 中转服务（4.1.4）
 ============================================================
 在 4.0.0 的「纯转发」版本上补上：鉴权 / 额度 / 会员 / 订单。
 4.1.0 再把第三方账号系统 Casdoor 换成内置账号模块（自建注册/登录/凭证校验），
@@ -9,7 +9,7 @@
 4.1.1 修注册：用户名放开中文（1~32 位），并把「用户名/密码不符合要求」写成
 一眼能看懂的整句（此前只收 ASCII，中文昵称会被当场拒掉且看不出原因；
 同日再补齐单字用户名——用户实际填的是「吴」这种单姓，被 2 位下限挡掉了）。
-4.1.2 重构管理后台（/admin，桌面优先的 INS 风控制台）并补上运维能力：
+4.1.2 重构管理后台（/admin，桌面优先的控制台）并补上运维能力：
   · 实时：每次数据落盘 +1 修订号，页面每 2 秒只拉一个几百字节的快照，
     变了才重画（/ai/admin/poll）；概览页有 KPI、额度分布、近 14 天趋势（/ai/admin/overview）
   · 每日统计 stats.json（调用/登录/下单/开通/收入/新增账号），趋势图与月收入靠它
@@ -20,6 +20,11 @@
 4.1.3 补「打回」：用户点了「我已完成支付」但管理员查账发现没收到钱时，
   后台订单页可以一键打回（POST /ai/admin/reject）—— 订单作废、不开会员、不计收入、
   记进操作审计，用户端显示「已作废」并可重新下单；已开通的订单不允许打回（防误抹会员）。
+4.1.4 后台配色简化：去掉 4.1.2 的 INS 渐变与彩色块，改成与桌面客户端
+  （src/styles.css）同一套视觉语言 —— 单一强调色靛蓝 #6366f1 + slate 中性底
+  （页面 #f8fafc / 卡片 #fff / 描边 #eef2f7）、12~16px 圆角、白底细描边按钮、
+  柔和阴影；暗色改成中性深色（#0f172a / #111827），图表按主题取色。
+  功能一行没减（六个页签、2 秒实时、暗色、抽屉、批量、CSV、打回都在）。
 
 设计要点
   · 鉴权：客户端必须带 Casdoor access_token（Authorization: Bearer xxx），
@@ -128,7 +133,7 @@ PORT = int(os.environ.get("MP_PORT", "2581"))
 CASDOOR_URL = os.environ.get("MP_CASDOOR_URL", "http://127.0.0.1:2580").rstrip("/")
 
 # ---- 4.1.0 自建账号模块 ----
-VERSION = "4.1.3"
+VERSION = "4.1.4"
 # casdoor：令牌拿去问 Casdoor（4.0.3 的行为，默认，便于随时回滚）
 # builtin：令牌本地校验，并额外监听 MP_AUTH_PORT（客户端写死的 2580）
 AUTH_MODE = (os.environ.get("MP_AUTH_MODE", "casdoor") or "casdoor").strip().lower()
@@ -1543,13 +1548,16 @@ ADMIN_PAGE = r"""<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>轻提词 · AI 服务后台</title>
 <!--
-  轻提词管理后台（4.1.2 重构：INS 风 / 桌面优先 / 2 秒实时）
+  轻提词管理后台（4.1.4：与客户端同源的简洁配色 / 桌面优先 / 2 秒实时）
   ------------------------------------------------------------------
   · 这个文件是「源文件」，由 sync_admin_page.py 注入 ai_server.py 的 ADMIN_PAGE 常量，
     服务端运行时**不读盘**（单文件部署，不依赖相对路径），改完必须跑一次：
         python3 sync_admin_page.py          # 注入
         python3 sync_admin_page.py --check  # 只检查有没有不同步（回归测试用）
-  · 纯离线：不引用任何 CDN / 外部字体 / 图表库，图表是手写 SVG。
+  · 配色规则（4.1.4 起）：与桌面客户端 src/styles.css 同一套 —— 只用一种强调色
+    靛蓝 #6366f1（--brand），其余全靠 slate 灰阶 + 1px 描边分层；
+    禁止渐变 / 彩色大色块 / 装饰性插画，圆角 12~16px，阴影柔和。
+  · 纯离线：不引用任何 CDN / 外部字体 / 图表库，图表是手写 SVG（按主题取色）。
   · 密钥只存在使用者自己的浏览器 localStorage，每次请求走 X-Admin-Key 头。
   · 为了回归测试（tests/admin_panel_smoke.mjs）能点得动，保留了这些钩子：
       id: key / save / clear / out / users / nname / npwd / ncreate / uresetall
@@ -1557,25 +1565,35 @@ ADMIN_PAGE = r"""<!doctype html>
               data-pwd / data-kick / data-status / data-note
 -->
 <style>
+  /* 配色与桌面客户端（src/styles.css）保持同一套：靛蓝品牌色 + slate 中性底。
+     原则：只用一种强调色（靛蓝），其余靠灰阶与 1px 描边分层，不要渐变/彩色块。 */
   :root {
-    --bg:#fafafa; --bg2:#f2f2f2; --card:#ffffff; --text:#0f1115; --muted:#8e8e93;
-    --line:#dbdbdb; --line-soft:#efefef; --shadow:0 1px 2px rgba(16,24,40,.04), 0 8px 24px rgba(16,24,40,.05);
-    --accent:#dc2743; --ok:#1c7c46; --warn:#b45309; --danger:#b42318;
-    --grad:linear-gradient(45deg,#f09433,#e6683c 25%,#dc2743 50%,#cc2366 75%,#bc1888);
-    --tint-blue:#eaf2ff; --tint-green:#e8f6ee; --tint-amber:#fff4e5; --tint-red:#fdecec; --tint-violet:#f4ebff;
-    --radius:16px; --radius-sm:10px;
+    --bg:#f8fafc; --bg2:#f1f5f9; --card:#ffffff;
+    --text:#1f2937; --muted:#6b7280; --aux:#9ca3af;
+    --line:#e2e8f0; --line-soft:#eef2f7;
+    --brand:#6366f1; --brand-strong:#4f46e5; --brand-tint:#eef2ff; --brand-press:#e0e7ff;
+    --shadow:0 1px 2px rgba(15,23,42,.04), 0 10px 25px -5px rgba(99,102,241,.12);
+    --shadow-sm:0 1px 2px rgba(15,23,42,.05);
+    --accent:var(--brand); --ok:#10b981; --warn:#b45309; --danger:#ef4444;
+    --tint-blue:#eef2ff; --tint-green:#ecfdf5; --tint-amber:#fffbeb; --tint-red:#fef2f2; --tint-violet:#f5f3ff;
+    --radius:16px; --radius-sm:12px;
   }
   html[data-theme="dark"] {
-    --bg:#000000; --bg2:#121212; --card:#121212; --text:#f5f5f5; --muted:#a8a8a8;
-    --line:#2a2a2a; --line-soft:#1f1f1f; --shadow:0 1px 2px rgba(0,0,0,.5), 0 10px 30px rgba(0,0,0,.45);
-    --tint-blue:#152238; --tint-green:#12291d; --tint-amber:#2b2110; --tint-red:#2c1516; --tint-violet:#221a33;
+    --bg:#0f172a; --bg2:#1e293b; --card:#111827;
+    --text:#e5e7eb; --muted:#94a3b8; --aux:#64748b;
+    --line:#334155; --line-soft:#1f2937;
+    --brand:#818cf8; --brand-strong:#6366f1; --brand-tint:#1e1b4b; --brand-press:#312e81;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 25px -5px rgba(0,0,0,.5);
+    --shadow-sm:0 1px 2px rgba(0,0,0,.35);
+    --ok:#34d399; --warn:#fbbf24; --danger:#f87171;
+    --tint-blue:#1e1b4b; --tint-green:#052e21; --tint-amber:#2b2110; --tint-red:#2c1516; --tint-violet:#221a33;
   }
   * { box-sizing:border-box; }
   html, body { height:100%; }
   body {
     margin:0; background:var(--bg); color:var(--text);
-    font:14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-         "Microsoft YaHei", Inter, Roboto, sans-serif;
+    font:14px/1.6 "Microsoft YaHei", "微软雅黑", "PingFang SC", "Segoe UI",
+         -apple-system, BlinkMacSystemFont, Inter, Roboto, sans-serif;
     -webkit-font-smoothing:antialiased;
   }
   button, input, select, textarea { font:inherit; color:inherit; }
@@ -1593,7 +1611,7 @@ ADMIN_PAGE = r"""<!doctype html>
   }
   .brand { display:flex; align-items:center; gap:10px; padding:4px 8px 10px; }
   .brand .logo {
-    width:34px; height:34px; border-radius:11px; background:var(--grad); flex:0 0 34px;
+    width:34px; height:34px; border-radius:11px; background:var(--brand); flex:0 0 34px;
     display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; font-size:15px;
   }
   .brand b { display:block; font-size:15px; letter-spacing:-.01em; }
@@ -1604,11 +1622,11 @@ ADMIN_PAGE = r"""<!doctype html>
     padding:9px 10px; border:0; border-radius:var(--radius-sm); background:transparent;
     cursor:pointer; color:var(--text); font-size:13.5px; position:relative;
   }
-  .nav-item:hover { background:var(--bg2); }
-  .nav-item.active { background:var(--bg2); font-weight:600; }
+  .nav-item:hover { background:var(--brand-tint); color:var(--brand-strong); }
+  .nav-item.active { background:var(--brand-tint); color:var(--brand-strong); font-weight:600; }
   .nav-item.active::before {
     content:""; position:absolute; left:-12px; top:8px; bottom:8px; width:3px; border-radius:0 3px 3px 0;
-    background:var(--grad);
+    background:var(--brand);
   }
   .nav-item .ico { width:18px; text-align:center; font-size:14px; opacity:.85; }
   .nav-item .grow { flex:1; }
@@ -1620,9 +1638,9 @@ ADMIN_PAGE = r"""<!doctype html>
   .pill.live { background:var(--tint-green); color:var(--ok); }
   .side-foot { margin-top:auto; display:flex; flex-direction:column; gap:8px; padding:0 6px 4px; }
   .side-foot .row2 { display:flex; align-items:center; gap:8px; }
-  .dot { width:8px; height:8px; border-radius:50%; background:#c7c7cc; flex:0 0 8px; }
-  .dot.on { background:#30d158; box-shadow:0 0 0 4px rgba(48,209,88,.16); animation:pulse 2s infinite; }
-  .dot.warn { background:#ff9f0a; box-shadow:0 0 0 4px rgba(255,159,10,.16); }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--aux); flex:0 0 8px; }
+  .dot.on { background:var(--ok); box-shadow:0 0 0 4px color-mix(in srgb, var(--ok) 16%, transparent); animation:pulse 2s infinite; }
+  .dot.warn { background:var(--warn); box-shadow:0 0 0 4px color-mix(in srgb, var(--warn) 16%, transparent); }
   @keyframes pulse { 50% { opacity:.45; } }
 
   main { flex:1; min-width:0; display:flex; flex-direction:column; }
@@ -1641,42 +1659,44 @@ ADMIN_PAGE = r"""<!doctype html>
   .page.active { display:block; animation:fade .18s ease; }
   @keyframes fade { from { opacity:0; transform:translateY(4px); } }
 
-  /* ---------------- 控件 ---------------- */
+  /* ---------------- 控件（与客户端 .btn / .form-input 同款：白底细描边 + 靛蓝主色） ---------------- */
   .btn {
-    height:34px; padding:0 13px; border-radius:var(--radius-sm); border:1px solid var(--line);
+    height:34px; padding:0 14px; border-radius:var(--radius-sm); border:1px solid var(--line);
     background:var(--card); cursor:pointer; font-size:13px; display:inline-flex; align-items:center;
-    gap:6px; white-space:nowrap; transition:background .15s, border-color .15s, transform .06s;
+    gap:6px; white-space:nowrap; color:var(--text); box-shadow:var(--shadow-sm);
+    transition:background .18s, border-color .18s, box-shadow .18s, transform .1s;
   }
-  .btn:hover { background:var(--bg2); }
+  .btn:hover { background:var(--brand-tint); border-color:color-mix(in srgb, var(--brand) 32%, var(--line));
+               color:var(--brand-strong); }
   .btn:active { transform:scale(.985); }
   .btn:disabled { opacity:.5; cursor:not-allowed; }
-  .btn.primary { background:var(--grad); border:0; color:#fff; font-weight:600; }
-  .btn.primary:hover { filter:brightness(1.06); background:var(--grad); }
-  .btn.dark { background:#111; border-color:#111; color:#fff; }
-  html[data-theme="dark"] .btn.dark { background:#f5f5f5; border-color:#f5f5f5; color:#111; }
-  .btn.danger { color:var(--danger); border-color:var(--line);
-                border-color:color-mix(in srgb, var(--danger) 35%, var(--line)); }
-  .btn.danger:hover { background:var(--tint-red); }
-  .btn.sm { height:27px; padding:0 9px; font-size:12px; border-radius:8px; }
+  .btn.primary { background:var(--brand); border-color:var(--brand); color:#fff; font-weight:600;
+                 box-shadow:0 6px 16px -8px rgba(99,102,241,.65); }
+  .btn.primary:hover { background:var(--brand-strong); border-color:var(--brand-strong); color:#fff; }
+  .btn.dark { background:var(--text); border-color:var(--text); color:var(--card); }
+  .btn.danger { background:var(--danger); border-color:var(--danger); color:#fff; font-weight:600;
+                box-shadow:0 6px 16px -8px rgba(239,68,68,.55); }
+  .btn.danger:hover { background:#dc2626; border-color:#dc2626; color:#fff; }
+  .btn.sm { height:28px; padding:0 10px; font-size:12px; border-radius:10px; }
   .btn.icon { width:34px; padding:0; justify-content:center; }
   input[type=text], input[type=password], input[type=number], select, textarea {
-    height:34px; padding:0 11px; border:1px solid var(--line); border-radius:var(--radius-sm);
-    background:var(--card); outline:none; min-width:0;
+    height:36px; padding:0 12px; border:1px solid var(--line); border-radius:10px;
+    background:var(--bg); outline:none; min-width:0; color:var(--text);
   }
-  textarea { height:auto; padding:9px 11px; resize:vertical; }
+  textarea { height:auto; padding:9px 12px; resize:vertical; }
   input:focus, select:focus, textarea:focus {
-    border-color:var(--accent); box-shadow:0 0 0 3px rgba(220,39,67,.16);
-    box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+    border-color:var(--brand); background:var(--card);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 16%, transparent);
   }
-  input[type=checkbox] { width:15px; height:15px; accent-color:var(--accent); cursor:pointer; }
+  input[type=checkbox] { width:15px; height:15px; accent-color:var(--brand); cursor:pointer; }
   label.lbl { font-size:12px; color:var(--muted); display:block; margin-bottom:5px; }
   .chips { display:flex; gap:6px; flex-wrap:wrap; }
   .chip {
     height:30px; padding:0 12px; border-radius:999px; border:1px solid var(--line);
     background:var(--card); cursor:pointer; font-size:12.5px; color:var(--muted);
   }
-  .chip:hover { background:var(--bg2); }
-  .chip.on { background:var(--text); color:var(--card); border-color:var(--text); font-weight:600; }
+  .chip:hover { background:var(--brand-tint); color:var(--brand-strong); }
+  .chip.on { background:var(--brand-tint); color:var(--brand-strong); border-color:var(--brand); font-weight:600; }
 
   /* ---------------- 卡片 ---------------- */
   .card {
@@ -1709,11 +1729,13 @@ ADMIN_PAGE = r"""<!doctype html>
   .kpi .k-sub { font-size:12px; color:var(--muted); display:flex; gap:8px; flex-wrap:wrap; }
   .kpi .k-ico {
     width:26px; height:26px; border-radius:9px; display:flex; align-items:center; justify-content:center;
-    font-size:13px; background:var(--bg2);
+    font-size:13px; background:var(--bg2); color:var(--muted);
   }
-  .k-ico.blue { background:var(--tint-blue); } .k-ico.green { background:var(--tint-green); }
-  .k-ico.amber { background:var(--tint-amber); } .k-ico.violet { background:var(--tint-violet); }
-  .k-ico.red { background:var(--tint-red); }
+  .k-ico.blue { background:var(--tint-blue); color:var(--brand-strong); }
+  .k-ico.green { background:var(--tint-green); color:var(--ok); }
+  .k-ico.amber { background:var(--tint-amber); color:var(--warn); }
+  .k-ico.violet { background:var(--tint-blue); color:var(--brand-strong); }
+  .k-ico.red { background:var(--tint-red); color:var(--danger); }
   .trend-up { color:var(--ok); } .trend-down { color:var(--danger); }
 
   /* 表格 */
@@ -1726,21 +1748,21 @@ ADMIN_PAGE = r"""<!doctype html>
     color:var(--muted); font-weight:500; font-size:11px; letter-spacing:.04em; text-transform:uppercase;
     white-space:nowrap; position:sticky; top:0; background:var(--card);
   }
-  table.tbl tbody tr:hover { background:var(--bg2); }
-  table.tbl tbody tr.sel { background:var(--bg2); background:color-mix(in srgb, var(--accent) 7%, transparent); }
+  table.tbl tbody tr:hover { background:var(--brand-tint); }
+  table.tbl tbody tr.sel { background:color-mix(in srgb, var(--brand) 7%, transparent); }
   table.tbl td.ops { white-space:nowrap; }
   table.tbl td.ops .btn { margin-right:5px; }
   table.tbl td.wrap { white-space:normal; max-width:200px; }
   .who { display:flex; align-items:center; gap:9px; }
   .avatar {
-    width:32px; height:32px; flex:0 0 32px; border-radius:50%; padding:2px; background:var(--grad);
-    display:flex; align-items:center; justify-content:center;
+    width:32px; height:32px; flex:0 0 32px; border-radius:50%; background:var(--brand-tint);
+    color:var(--brand-strong); display:flex; align-items:center; justify-content:center;
   }
   .avatar > span {
-    width:100%; height:100%; border-radius:50%; background:var(--card); display:flex;
-    align-items:center; justify-content:center; font-size:12px; font-weight:600;
+    width:100%; height:100%; border-radius:50%; background:transparent; display:flex;
+    align-items:center; justify-content:center; font-size:12px; font-weight:600; color:inherit;
   }
-  .avatar.plain { background:var(--line); }
+  .avatar.plain { background:var(--bg2); color:var(--muted); }
   .avatar.lg { width:56px; height:56px; flex-basis:56px; }
   .avatar.lg > span { font-size:20px; }
   .badge { display:inline-block; padding:2px 9px; border-radius:999px; font-size:11px; white-space:nowrap; }
@@ -1748,7 +1770,7 @@ ADMIN_PAGE = r"""<!doctype html>
   .b-claimed { background:var(--tint-amber); color:var(--warn); }
   .b-paid { background:var(--tint-green); color:var(--ok); }
   .b-canceled { background:var(--bg2); color:var(--muted); opacity:.75; }
-  .b-free { background:var(--tint-blue); color:#1a56db; }
+  .b-free { background:var(--tint-blue); color:var(--brand-strong); }
   .b-member { background:var(--tint-green); color:var(--ok); }
   .b-off { background:var(--tint-red); color:var(--danger); }
   .b-none { background:var(--bg2); color:var(--muted); }
@@ -1759,9 +1781,9 @@ ADMIN_PAGE = r"""<!doctype html>
   .summary b { color:var(--text); font-weight:650; }
   .summary b.hot { color:var(--warn); }
   .bar { height:7px; border-radius:999px; background:var(--bg2); overflow:hidden; }
-  .bar > i { display:block; height:100%; border-radius:999px; background:var(--grad); }
-  .bar.blue > i { background:#3b82f6; } .bar.green > i { background:#22a06b; }
-  .bar.amber > i { background:#f59e0b; } .bar.gray > i { background:#9ca3af; }
+  .bar > i { display:block; height:100%; border-radius:999px; background:var(--brand); }
+  .bar.blue > i { background:var(--brand); } .bar.green > i { background:var(--ok); }
+  .bar.amber > i { background:#f59e0b; } .bar.gray > i { background:var(--aux); }
 
   /* 订单 */
   .orders { display:flex; flex-direction:column; gap:9px; }
@@ -1816,13 +1838,13 @@ ADMIN_PAGE = r"""<!doctype html>
   .modal-ft { display:flex; gap:8px; justify-content:flex-end; margin-top:16px; }
   .toasts { position:fixed; right:18px; bottom:18px; z-index:70; display:flex; flex-direction:column; gap:8px; align-items:flex-end; }
   .toast {
-    background:#111; color:#fff; padding:10px 14px; border-radius:12px; font-size:12.5px; max-width:340px;
-    box-shadow:0 10px 30px rgba(0,0,0,.28); animation:fade .18s ease; white-space:pre-wrap;
+    background:var(--card); color:var(--text); padding:10px 14px; border-radius:12px; font-size:12.5px;
+    max-width:340px; border:1px solid var(--line-soft);
+    box-shadow:0 10px 30px -10px rgba(15,23,42,.28); animation:fade .18s ease; white-space:pre-wrap;
   }
-  html[data-theme="dark"] .toast { background:#f5f5f5; color:#111; }
-  .toast.ok { border-left:3px solid #30d158; }
-  .toast.err { border-left:3px solid #ff453a; }
-  .toast.info { border-left:3px solid #0a84ff; }
+  .toast.ok { border-left:3px solid var(--ok); }
+  .toast.err { border-left:3px solid var(--danger); }
+  .toast.info { border-left:3px solid var(--brand); }
   .hint { color:var(--muted); font-size:12px; line-height:1.7; }
   .err { color:var(--danger); }
   .pager { display:flex; align-items:center; gap:8px; justify-content:flex-end; margin-top:12px; font-size:12.5px; color:var(--muted); }
@@ -1838,7 +1860,7 @@ ADMIN_PAGE = r"""<!doctype html>
   .toolbar .grow { flex:1; min-width:160px; }
   .selbar {
     display:none; align-items:center; gap:8px; flex-wrap:wrap; padding:9px 12px; margin-bottom:12px;
-    border-radius:var(--radius-sm); background:var(--tint-violet); font-size:12.5px;
+    border-radius:var(--radius-sm); background:var(--brand-tint); color:var(--brand-strong); font-size:12.5px;
   }
   .selbar.on { display:flex; }
   .kv-inline { display:flex; gap:12px; flex-wrap:wrap; font-size:12.5px; color:var(--muted); }
@@ -1917,8 +1939,8 @@ ADMIN_PAGE = r"""<!doctype html>
             </div>
             <div class="chart-wrap" id="chart"></div>
             <div class="legend">
-              <span><i style="background:var(--grad)"></i>调用次数</span>
-              <span><i style="background:#22a06b"></i>开通会员（笔）</span>
+              <span><i style="background:var(--brand)"></i>调用次数</span>
+              <span><i style="background:var(--ok)"></i>开通会员（笔）</span>
             </div>
           </div>
           <div class="card">
@@ -2347,6 +2369,7 @@ ADMIN_PAGE = r"""<!doctype html>
   }
   $('themeBtn').addEventListener('click', function () {
     setTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+    if (S.series && S.series.length) renderDash();   // 图表是按主题取色的，切主题要重画
   });
 
   /* ---------------------------------------------------------- 页签 */
@@ -2383,7 +2406,14 @@ ADMIN_PAGE = r"""<!doctype html>
       '<div class="k-val">' + value + '</div>' +
       '<div class="k-sub">' + (sub || '') + '</div></div>';
   }
+  /* 图表配色跟着主题走（SVG 的 fill/stroke 属性吃不了 CSS 变量，只能按主题取色） */
+  function chartColors() {
+    return document.documentElement.getAttribute('data-theme') === 'dark'
+      ? { line:'#818cf8', fill:'#818cf8', bar:'#34d399', dot:'#111827', axis:'#64748b' }
+      : { line:'#6366f1', fill:'#6366f1', bar:'#10b981', dot:'#ffffff', axis:'#9ca3af' };
+  }
   function areaChart(series, key, height) {
+    var C = chartColors();
     var W = 720, H = height || 190, padL = 6, padR = 6, padT = 16, padB = 22;
     var n = series.length;
     if (!n) return '<div class="empty">暂无数据</div>';
@@ -2403,14 +2433,14 @@ ADMIN_PAGE = r"""<!doctype html>
       if (!v) return;
       var h = Math.max(2, (H - padT - padB) * 0.34 * (v / Math.max(1, maxPaid(series))));
       bars += '<rect x="' + (padL + i * stepX - bw / 2).toFixed(1) + '" y="' + (H - padB - h).toFixed(1) +
-        '" width="' + bw.toFixed(1) + '" height="' + h.toFixed(1) + '" rx="2" fill="#22a06b" opacity=".75"><title>' +
+        '" width="' + bw.toFixed(1) + '" height="' + h.toFixed(1) + '" rx="2" fill="' + C.bar + '" opacity=".8"><title>' +
         esc(d.day) + '：开通 ' + v + ' 笔</title></rect>';
     });
     var dots = '';
     series.forEach(function (d, i) {
       if (i === n - 1 || Number(d[key]) > 0) {
         dots += '<circle cx="' + pts[i][0].toFixed(1) + '" cy="' + pts[i][1].toFixed(1) +
-          '" r="' + (i === n - 1 ? 4 : 2.6) + '" fill="#fff" stroke="#dc2743" stroke-width="2"><title>' +
+          '" r="' + (i === n - 1 ? 4 : 2.6) + '" fill="' + C.dot + '" stroke="' + C.line + '" stroke-width="2"><title>' +
           esc(d.day) + '：' + Number(d[key] || 0) + ' 次</title></circle>';
       }
     });
@@ -2418,15 +2448,15 @@ ADMIN_PAGE = r"""<!doctype html>
     series.forEach(function (d, i) {
       if (i % 2 === 0 || i === n - 1) {
         labels += '<text x="' + (padL + i * stepX).toFixed(1) + '" y="' + (H - 6) +
-          '" font-size="10" fill="#8e8e93" text-anchor="middle">' + esc(fmtDay(d.day)) + '</text>';
+          '" font-size="10" fill="' + C.axis + '" text-anchor="middle">' + esc(fmtDay(d.day)) + '</text>';
       }
     });
     return '<svg class="chart" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' +
       '<defs><linearGradient id="ag" x1="0" y1="0" x2="0" y2="1">' +
-      '<stop offset="0%" stop-color="#dc2743" stop-opacity=".26"/>' +
-      '<stop offset="100%" stop-color="#dc2743" stop-opacity="0"/></linearGradient></defs>' +
+      '<stop offset="0%" stop-color="' + C.fill + '" stop-opacity=".22"/>' +
+      '<stop offset="100%" stop-color="' + C.fill + '" stop-opacity="0"/></linearGradient></defs>' +
       '<polygon points="' + area + '" fill="url(#ag)"/>' +
-      '<polyline points="' + line + '" fill="none" stroke="#dc2743" stroke-width="2.2" ' +
+      '<polyline points="' + line + '" fill="none" stroke="' + C.line + '" stroke-width="2.2" ' +
       'stroke-linejoin="round" stroke-linecap="round"/>' +
       bars + dots + labels + '</svg>';
   }
