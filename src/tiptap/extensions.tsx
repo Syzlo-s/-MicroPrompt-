@@ -2,9 +2,11 @@ import { Extension, Node, mergeAttributes } from "@tiptap/core";
 import Paragraph from "@tiptap/extension-paragraph";
 import { NodeViewWrapper, ReactNodeViewRenderer } from "@tiptap/react";
 import type { NodeViewProps } from "@tiptap/react";
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useMemo } from "react";
 import { useStore } from "../store";
 import { analyzeCodeBlock } from "../utils/codeBlockAnalyzer";
+import { pinScroll } from "../utils/scrollPin";
+import { showToast } from "../utils/toast";
 
 /* ============================================================
  * 段落扩展：在默认 paragraph 基础上支持首行缩进（text-indent）
@@ -276,28 +278,22 @@ function AiBlockView({ node, editor, getPos }: NodeViewProps) {
   const title = (lines[0] ?? "").trim() || "AI 润色";
   const bodyLines = lines.slice(1);
   const collapsed = Boolean(attrs.collapsed);
+  const generating = Boolean(attrs.generating);
 
-  // 双击方框任意位置 → 复制润色后的完整文字
-  const [copied, setCopied] = useState(false);
-  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(
-    () => () => {
-      if (copyTimer.current) clearTimeout(copyTimer.current);
-    },
-    [],
-  );
+  // 复制润色结果：双击方框任意位置，或点右上角「复制」按钮
   const copyText = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (attrs.generating) return;
+    (e?: React.MouseEvent) => {
+      e?.preventDefault();
+      e?.stopPropagation();
+      if (generating) return;
       const payload = text.trim();
       if (!payload) return;
-      const done = () => {
-        setCopied(true);
-        if (copyTimer.current) clearTimeout(copyTimer.current);
-        copyTimer.current = setTimeout(() => setCopied(false), 1200);
-      };
+      const done = () =>
+        showToast({
+          text: "已复制到剪贴板",
+          tone: "success",
+          key: "ai-block-copied",
+        });
       const fallback = () => {
         try {
           const ta = document.createElement("textarea");
@@ -319,21 +315,54 @@ function AiBlockView({ node, editor, getPos }: NodeViewProps) {
         fallback();
       }
     },
-    [text, attrs.generating],
+    [text, generating],
   );
 
-  const toggle = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const pos = typeof getPos === "function" ? getPos() : undefined;
-    if (pos === undefined || pos === null) return;
-    editor.view.dispatch(
-      editor.state.tr.setNodeMarkup(pos, undefined, {
-        ...node.attrs,
-        collapsed: !collapsed,
-      }),
-    );
-  };
+  /* 折叠 / 展开：只改 attr，高度由 .ai-block-body 的 CSS 过渡完成。
+     过渡期间把编辑区滚动位置钉住 —— 方框就从用户点击的当前位置展开，
+     浏览器不会顺手把画面滚一下（滚动锚定 / 光标重定位都在这期间被抵消）。 */
+  const toggle = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const pos = typeof getPos === "function" ? getPos() : undefined;
+      if (pos === undefined || pos === null) return;
+      const scroller = (e.currentTarget as HTMLElement | null)?.closest(
+        ".editor-scroll",
+      ) as HTMLElement | null;
+      // 340ms 展开动画 + 余量
+      pinScroll(scroller, 420);
+      editor.view.dispatch(
+        editor.state.tr.setNodeMarkup(pos, undefined, {
+          ...node.attrs,
+          collapsed: !collapsed,
+        }),
+      );
+    },
+    [collapsed, editor, getPos, node.attrs],
+  );
+
+  /** 删除整个润色框（结果容器），可一键撤销 */
+  const remove = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const pos = typeof getPos === "function" ? getPos() : undefined;
+      if (typeof pos !== "number") return;
+      const ed = editor;
+      ed.view.dispatch(ed.state.tr.delete(pos, pos + node.nodeSize));
+      showToast({
+        text: "已删除润色框",
+        tone: "success",
+        actionLabel: "撤销",
+        onAction: () => ed.commands.undo(),
+        key: "ai-block-remove",
+      });
+    },
+    [editor, getPos, node.nodeSize],
+  );
+
+  const stopDbl = (e: React.MouseEvent) => e.stopPropagation();
 
   return (
     <NodeViewWrapper
@@ -345,25 +374,68 @@ function AiBlockView({ node, editor, getPos }: NodeViewProps) {
       contentEditable={false}
       onDoubleClick={copyText}
     >
-      <button
-        className="ai-block-toggle"
-        onMouseDown={(e) => e.preventDefault()}
-        onClick={toggle}
-        title={collapsed ? "展开" : "折叠"}
-      >
-        <svg
-          viewBox="0 0 24 24"
-          width="14"
-          height="14"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.4"
-          strokeLinecap="round"
-          strokeLinejoin="round"
+      {/* 悬停操作条：复制 / 折叠 / 删除 */}
+      <div className="ai-block-tools" contentEditable={false} onDoubleClick={stopDbl}>
+        <button
+          className="ai-block-btn"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={copyText}
+          title={generating ? "润色中，暂不可复制" : "复制全文（也可双击方框）"}
+          disabled={generating}
         >
-          <path d="M6 9l6 6 6-6" />
-        </svg>
-      </button>
+          <svg
+            viewBox="0 0 24 24"
+            width="14"
+            height="14"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.9"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <rect x="9" y="9" width="11" height="11" rx="2.5" />
+            <path d="M15 5.6A2.6 2.6 0 0 0 12.4 4H6.5A2.5 2.5 0 0 0 4 6.5v5.9A2.6 2.6 0 0 0 5.6 15" />
+          </svg>
+        </button>
+        <button
+          className="ai-block-btn chev"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={toggle}
+          title={collapsed ? "展开" : "折叠"}
+        >
+          <svg
+            viewBox="0 0 24 24"
+            width="14"
+            height="14"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M6 9l6 6 6-6" />
+          </svg>
+        </button>
+        <button
+          className="ai-block-btn danger"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={remove}
+          title="删除润色框（可撤销）"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            width="14"
+            height="14"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.9"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M4 7h16M9.5 7V5.4A1.4 1.4 0 0 1 10.9 4h2.2a1.4 1.4 0 0 1 1.4 1.4V7M6.5 7l.8 11.2A2 2 0 0 0 9.3 20h5.4a2 2 0 0 0 2-1.8L17.5 7M10.5 11v5.5M13.5 11v5.5" />
+          </svg>
+        </button>
+      </div>
       <span className="ai-block-title">{title}</span>
       <div className="ai-block-body" aria-hidden={collapsed}>
         <div className="ai-block-body-inner">
@@ -378,7 +450,6 @@ function AiBlockView({ node, editor, getPos }: NodeViewProps) {
           ))}
         </div>
       </div>
-      {copied && <span className="ai-block-copied">已复制</span>}
     </NodeViewWrapper>
   );
 }

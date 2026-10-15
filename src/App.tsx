@@ -5,6 +5,7 @@ import EditorArea from "./components/EditorArea";
 import BottomDock from "./components/BottomDock";
 import LoginScreen from "./components/LoginScreen";
 import WelcomeScreen from "./components/WelcomeScreen";
+import ToastHost from "./components/ToastHost";
 
 /** UI 缩放：小 / 中 / 大 */
 const UI_ZOOMS = [1, 1.15, 1.3];
@@ -95,6 +96,7 @@ export default function App() {
         <BottomDock />
       </div>
       {!welcomeDone && <WelcomeScreen />}
+      <ToastHost />
     </div>
   );
 }

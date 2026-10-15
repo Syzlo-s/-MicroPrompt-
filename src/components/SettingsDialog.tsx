@@ -1,9 +1,10 @@
 import React from "react";
 import { useStore, THEMES } from "../store";
 import { uploadAvatar, updateProfile } from "../services/auth";
-import { formatMemberUntil, memberDaysLeft } from "../services/ai";
+import { formatMemberUntil, memberDaysLeft, AI_PLANS, FREE_DAILY_QUOTA } from "../services/ai";
 import { fileToAvatarDataUrl, MAX_AVATAR_BYTES } from "../utils";
 import defaultAvatar from "../assets/icons/default-avatar.svg";
+import ChangePasswordDialog from "./ChangePasswordDialog";
 
 const UI_MARKS = ["小", "中", "大"];
 /** 单个面板设计宽度（缩放基准） */
@@ -73,6 +74,30 @@ function MiniUI({
         </div>
       )}
     </div>
+  );
+}
+
+/** 分组卡片：小图标 + 标题 + 一组设置行（4.1.8 重设计，设置页统一用它分组） */
+function SetCard({
+  icon,
+  title,
+  extra,
+  children,
+}: {
+  icon?: React.ReactNode;
+  title: string;
+  extra?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="set-card">
+      <div className="set-card-head">
+        {icon && <span className="set-card-ico">{icon}</span>}
+        <span className="set-card-title">{title}</span>
+        {extra && <span className="set-card-extra">{extra}</span>}
+      </div>
+      <div className="set-card-body">{children}</div>
+    </section>
   );
 }
 
@@ -213,16 +238,20 @@ export default function SettingsDialog({
     void refreshAiQuota();
   }, [refreshAiQuota]);
 
-  // Esc：二级卡片先收回，主菜单再关闭
+  /** 修改密码的二级界面开关（4.1.8）：Esc 处理要用到，所以声明在最前面 */
+  const [pwdOpen, setPwdOpen] = React.useState(false);
+
+  // Esc：二级卡片先收回，主菜单再关闭；改密码小窗开着时交给它自己处理
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      if (pwdOpen) return; // 改密码小窗的 Esc 由它自己接管
       if (!accountOnly && view !== "root") setView("root");
       else requestClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [requestClose, view, accountOnly]);
+  }, [requestClose, view, accountOnly, pwdOpen]);
 
   const handleLogout = () => {
     clearAuth();
@@ -233,6 +262,15 @@ export default function SettingsDialog({
   const handleRelogin = () => {
     clearAuth();
     requestClose();
+  };
+
+  /**
+   * 改密成功（4.1.8）：服务端把凭证版本 +1 并补发一张新令牌，
+   * 这里必须把它存回本地 —— 否则本机自己也被踢下线了。
+   */
+  const handlePasswordChanged = (freshToken: string) => {
+    setAuth(freshToken, authUser ?? { id: username, username });
+    setAccMsg("密码已修改：其它设备上的登录已失效，本机继续保持登录");
   };
 
   // ---- 用户信息 ----
@@ -323,59 +361,164 @@ export default function SettingsDialog({
     }
   };
 
+  // ---- AI 会员卡片：状态 / 今日剩余额度 / 文案（4.1.2 重设计）----
+  // 4.1.8：挪到「用户」页之前 —— 用户页的账号卡也要显示会员标签
+  const aiUnlimited = Boolean(aiQuota?.free);
+  const aiIsMember = Boolean(aiQuota?.member) && !aiUnlimited;
+  const aiCapToday = aiIsMember
+    ? aiQuota?.memberCap ?? 0
+    : aiQuota?.freeQuota ?? FREE_DAILY_QUOTA;
+  const aiLeftToday = aiUnlimited
+    ? -1
+    : aiIsMember
+      ? Math.max(0, aiCapToday - (aiQuota?.memberUsedToday ?? 0))
+      : Math.max(0, aiQuota?.remainingToday ?? aiCapToday);
+  /** 今日剩余额度占每日上限的比例（0~100）：卡片上只画这条，不写数字 */
+  const aiLeftPct =
+    aiUnlimited || aiCapToday <= 0
+      ? 100
+      : Math.max(0, Math.min(100, Math.round((aiLeftToday / aiCapToday) * 100)));
+  /** 额度接口彻底不可用（服务端旧版 / 未登录 / 断网） */
+  const aiCardBroken = Boolean(aiQuotaErrorCode && !aiQuota);
+  const aiPlanName = aiUnlimited
+    ? "免费不限量"
+    : aiIsMember
+      ? "AI 会员"
+      : aiQuota
+        ? "免费版"
+        : aiQuotaError
+          ? "额度暂不可用"
+          : "正在获取额度…";
+  const aiPlanChip = aiUnlimited
+    ? "已开通"
+    : aiIsMember
+      ? "生效中"
+      : aiQuota
+        ? "未开通"
+        : aiQuotaLoading
+          ? "加载中"
+          : "离线";
+  const aiPlanDesc = aiUnlimited
+    ? "管理员已为你的账号开通，AI 润色不限次数"
+    : aiIsMember
+      ? `有效期至 ${formatMemberUntil(aiQuota?.memberUntil ?? 0)} · 剩余 ${memberDaysLeft(aiQuota?.memberUntil ?? 0)} 天`
+      : aiQuota
+        ? `每天 ${aiCapToday} 次免费润色，开通后不限量`
+        : "稍后会自动重试，也可点右上角刷新";
+
   // 用户信息内容（账号卡片 / 「用户」设置页共用）
+  // 4.1.8 重设计：原来是一列平铺的「头像 → 用户名 → 修改密码（联系客服）→ 按钮」，
+  // 改成分组卡片：账号卡（我是谁）/ 用户名卡（显示名）/ 账号安全卡（改密码、退出登录）。
+  // 其中「修改密码」不再让用户去联系客服，而是进一层独立小窗自己改（ChangePasswordDialog）。
   const accountFields = (
-    <>
-      <div className="acc-avatar-row">
-        <label className="acc-avatar" title="点击更换头像（正方形，≤2MB）">
-          <img src={avatar ?? defaultAvatar} alt="头像" />
-          <input type="file" accept="image/*" onChange={handleAvatarFile} />
-        </label>
+    <div className="set-stack">
+      {/* 账号卡：头像 + 当前身份 */}
+      <section className="set-card acc-card">
+        <div className="acc-hero">
+          <label className="acc-hero-avatar" title="点击更换头像（正方形，≤2MB）">
+            <img src={avatar ?? defaultAvatar} alt="头像" />
+            <input type="file" accept="image/*" onChange={handleAvatarFile} />
+          </label>
+          <div className="acc-hero-info">
+            <div className="acc-hero-name" title={username}>
+              {username}
+            </div>
+            <div className="acc-hero-tags">
+              <span
+                className={
+                  "acc-chip" +
+                  (aiUnlimited ? " is-unlimited" : aiIsMember ? " is-member" : "")
+                }
+              >
+                {aiPlanName}
+              </span>
+              <span className="acc-hero-tip">点头像可更换</span>
+            </div>
+          </div>
+        </div>
         {avatar && (
           <button
             className="btn acc-avatar-reset"
-            onClick={() => setAvatar(null)}
+            onClick={() => {
+              setAvatar(null);
+              setAccMsg("已恢复默认头像");
+            }}
           >
             恢复默认头像
           </button>
         )}
-      </div>
+      </section>
 
-      <div className="set-section">
-        <div className="set-label">用户名</div>
+      {/* 用户名卡：显示名（登录用户名不可改） */}
+      <SetCard
+        title="用户名"
+        icon={
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="8" r="3.4" />
+            <path d="M5 20a7 7 0 0 1 14 0" />
+          </svg>
+        }
+        extra={<span className="set-card-note">软件内显示的名字</span>}
+      >
         <input
-          className="dialog-input"
+          className="dialog-input set-card-input"
           value={accName}
           placeholder="用户名"
           onChange={(e) => setAccName(e.target.value)}
         />
-      </div>
+        <div className="set-card-actions">
+          <button
+            className="btn btn-primary"
+            disabled={saving || !isCloud}
+            onClick={handleSaveAccount}
+          >
+            {saving ? "保存中…" : "保存用户名"}
+          </button>
+        </div>
+      </SetCard>
 
-      <div className="set-section">
-        <div className="set-label">修改密码</div>
-        <div className="set-contact">
-          <span className="set-contact-text">如需修改密码，请联系客服</span>
-          <button className="btn" onClick={copySupportEmail}>
+      {/* 账号安全卡：改密码 / 退出登录 */}
+      <SetCard
+        title="账号安全"
+        icon={
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="4" y="10.5" width="16" height="10" rx="3" />
+            <path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" />
+          </svg>
+        }
+      >
+        <div className="set-row">
+          <span className="label-text">
+            修改密码
+            <InfoTip text="需要先输入原密码；改完其它设备上的登录会失效，本机继续保持登录" />
+          </span>
+          <button
+            className="btn btn-sm"
+            disabled={!isCloud}
+            onClick={() => setPwdOpen(true)}
+          >
+            修改
+          </button>
+        </div>
+        <div className="set-row">
+          <span className="label-text">
+            退出登录
+            <InfoTip text="只清除本机的登录状态，不影响会员与额度；重新登录即可继续用" />
+          </span>
+          <button className="btn btn-logout btn-sm" onClick={handleLogout}>
+            退出
+          </button>
+        </div>
+        <div className="set-row set-row-quiet">
+          <span className="set-contact-text">改不了 / 忘了原密码？联系客服</span>
+          <button className="btn btn-sm" onClick={copySupportEmail}>
             复制邮箱
           </button>
         </div>
-      </div>
+      </SetCard>
 
       {accMsg && <div className="set-hint acc-msg">{accMsg}</div>}
-
-      <div className="dialog-actions settings-actions">
-        <button className="btn btn-logout" onClick={handleLogout}>
-          退出登录
-        </button>
-        <button
-          className="btn btn-primary"
-          disabled={saving}
-          onClick={handleSaveAccount}
-        >
-          {saving ? "保存中…" : "保存"}
-        </button>
-      </div>
-    </>
+    </div>
   );
 
   // ---- 二级设置页内容 ----
@@ -435,34 +578,111 @@ export default function SettingsDialog({
   );
 
   const viewAi = (
-    <div className="set-section">
-      {/* ===== AI 会员 / 额度（4.0.2）===== */}
-      <div className="set-label">AI 会员</div>
-      <div className="ai-member-card">
-        <div className={"ai-member-line" + (aiQuotaErrorCode && !aiQuota ? " warn" : "")}>
-          {aiQuota
-            ? aiQuota.free
-              ? "免费不限量 · 管理员已为你的账号开通"
-              : aiQuota.member
-                ? `会员 · 有效期至 ${formatMemberUntil(aiQuota.memberUntil)}`
-                : `免费版 · 今日剩余 ${aiQuota.remainingToday}/${aiQuota.freeQuota} 次`
-            : aiQuotaError || (aiQuotaLoading ? "正在获取额度…" : "尚未获取额度")}
-        </div>
-        {aiQuota?.free && (
-          <div className="ai-member-sub">
-            今日已用 {aiQuota.unlimitedUsedToday ?? 0} 次 · 不限次数（仅保留 2 秒调用间隔）
+    <div className="set-stack">
+      {/* ===== AI 会员 / 额度（4.1.2 重设计，4.1.8 起并入分组卡片）===== */}
+      <div
+        className={
+          "ai-plan-card" +
+          (aiIsMember ? " is-member" : "") +
+          (aiUnlimited ? " is-unlimited" : "") +
+          (aiCardBroken ? " is-warn" : "")
+        }
+      >
+        <div className="ai-plan-head">
+          <span className="ai-plan-ico" aria-hidden="true">
+            <svg
+              viewBox="0 0 24 24"
+              width="15"
+              height="15"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.7"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M11 3.4l1.8 4.3 4.3 1.8-4.3 1.8L11 15.6 9.2 11.3 4.9 9.5l4.3-1.8L11 3.4z" />
+              <path d="M18 14.4l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9.9-2.1z" />
+            </svg>
+          </span>
+          <div className="ai-plan-headtext">
+            <div className="ai-plan-title">
+              <span className="ai-plan-name">{aiPlanName}</span>
+              <span
+                className={
+                  "ai-plan-chip" + (aiUnlimited || aiIsMember ? " on" : "")
+                }
+              >
+                {aiPlanChip}
+              </span>
+            </div>
+            <div className="ai-plan-desc">{aiPlanDesc}</div>
           </div>
-        )}
-        {!aiQuota?.free && aiQuota?.member && (
-          <div className="ai-member-sub">
-            剩余 {memberDaysLeft(aiQuota.memberUntil)} 天 · 今日已用{" "}
-            {aiQuota.memberUsedToday}/{aiQuota.memberCap} 次 · 正常使用不限量
-          </div>
-        )}
-        <div className="ai-member-actions">
-          <button className="btn" onClick={() => void refreshAiQuota()}>
-            {aiQuotaLoading ? "刷新中…" : "刷新"}
+          <button
+            className={"ai-plan-refresh" + (aiQuotaLoading ? " spinning" : "")}
+            onClick={() => void refreshAiQuota()}
+            title="刷新额度"
+            disabled={aiQuotaLoading}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              width="14"
+              height="14"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M20.5 12a8.5 8.5 0 1 1-2.6-6.1" />
+              <path d="M20.5 4.5V10h-5.5" />
+            </svg>
           </button>
+        </div>
+
+        {/* 今日额度：会员 / 免费版 = 剩余比例条，不限量 = 一条循环流动的「无限」条
+            整条即 100%，一律不显示任何数字 */}
+        {aiQuota && (
+          <div
+            className={
+              "ai-plan-meter" +
+              (aiUnlimited
+                ? " is-infinite"
+                : aiLeftToday <= 0
+                  ? " is-empty"
+                  : "")
+            }
+            role="progressbar"
+            aria-label={aiUnlimited ? "AI 润色不限量" : "今日 AI 剩余额度"}
+            aria-valuemin={aiUnlimited ? undefined : 0}
+            aria-valuemax={aiUnlimited ? undefined : 100}
+            aria-valuenow={aiUnlimited ? undefined : aiLeftPct}
+          >
+            <div className="ai-plan-meter-bar">
+              <span
+                className={
+                  "ai-plan-meter-fill" +
+                  (!aiUnlimited && aiLeftPct <= 20 ? " low" : "")
+                }
+                style={aiUnlimited ? undefined : { width: aiLeftPct + "%" }}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* 未开通：直接摆出价位，省掉一次点击 */}
+        {aiQuota && !aiUnlimited && !aiIsMember && (
+          <div className="ai-plan-prices">
+            {AI_PLANS.map((p) => (
+              <span className="ai-plan-price" key={p.key}>
+                <b>{p.name}</b>
+                <i>¥{p.amount}</i>
+                <em>{p.desc}</em>
+              </span>
+            ))}
+          </div>
+        )}
+
+        <div className="ai-plan-actions">
           {/* 登录失效 → 直接给一个重新登录入口；离线账号 / 服务端旧版 → 下单也没用，禁掉 */}
           {aiQuotaErrorCode === "auth" ? (
             <button className="btn btn-primary" onClick={handleRelogin}>
@@ -475,71 +695,90 @@ export default function SettingsDialog({
               disabled={!aiQuota}
               title={aiQuota ? "" : "额度信息不可用时无法下单"}
             >
-              {aiQuota?.member || aiQuota?.free ? "续费 / 升级" : "开通会员"}
+              {aiUnlimited || aiIsMember ? "续费 / 升级" : "开通会员"}
             </button>
           )}
         </div>
-        {!aiQuota?.member && !aiQuota?.free && aiQuota && (
-          <div className="set-hint">
-            免费版每天 {aiQuota?.freeQuota ?? 3} 次；日卡 ¥2（24 小时）、月卡 ¥8（30 天）
-          </div>
+
+        {aiCardBroken && aiQuotaError && (
+          <div className="ai-plan-note">{aiQuotaError}</div>
         )}
         {/* 有缓存额度但这次没取到 → 明确告诉用户上面是旧数据，别当成实时额度 */}
         {aiQuota && aiQuotaError && (
-          <div className="set-hint ai-member-stale">
+          <div className="ai-plan-note">
             暂时连不上 AI 服务，上面显示的是上次获取到的额度
           </div>
         )}
       </div>
 
-      <div className="set-row">
-        <span className="label-text">
-          自动润色
-          <InfoTip text="开启后选中文本会出现「AI 润色」小按钮；无论开关如何，右键菜单中始终有「AI 润色」" />
-        </span>
-        <label className="toggle">
-          <input
-            type="checkbox"
-            className="toggle-state"
-            checked={autoPolish}
-            onChange={(e) => setAutoPolish(e.target.checked)}
-          />
-          <span className="indicator" />
-        </label>
-      </div>
-      <div className="set-row">
-        <span className="label-text">润色框文字大小</span>
-        <div
-          className="seg-toggle"
-          data-scale={aiFontSize === 8 ? 0 : aiFontSize === 10 ? 1 : 2}
-        >
-          <span className="seg-thumb" />
-          {[8, 10, 12].map((pt) => (
-            <button
-              key={pt}
-              className={"seg-item" + (aiFontSize === pt ? " on" : "")}
-              onClick={() => setAiFontSize(pt)}
-            >
-              {pt}
-            </button>
-          ))}
+      <SetCard
+        title="AI 润色"
+        icon={
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 3l1.9 5.4L19 10.5l-5.1 2.1L12 18l-1.9-5.4L5 10.5l5.1-2.1L12 3z" />
+          </svg>
+        }
+      >
+        <div className="set-row">
+          <span className="label-text">
+            自动润色
+            <InfoTip text="开启后选中文本会出现「AI 润色」小按钮；无论开关如何，右键菜单中始终有「AI 润色」" />
+          </span>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              className="toggle-state"
+              checked={autoPolish}
+              onChange={(e) => setAutoPolish(e.target.checked)}
+            />
+            <span className="indicator" />
+          </label>
         </div>
-      </div>
-      <div className="set-row">
-        <span className="label-text">
-          代码块自动识别
-          <InfoTip text="打开后粘贴代码会询问是否添加为代码块；关闭后只能手动添加" />
-        </span>
-        <label className="toggle">
-          <input
-            type="checkbox"
-            className="toggle-state"
-            checked={autoDetect}
-            onChange={(e) => setAutoDetect(e.target.checked)}
-          />
-          <span className="indicator" />
-        </label>
-      </div>
+        <div className="set-row">
+          <span className="label-text">润色框文字大小</span>
+          <div
+            className="seg-toggle"
+            data-scale={aiFontSize === 8 ? 0 : aiFontSize === 10 ? 1 : 2}
+          >
+            <span className="seg-thumb" />
+            {[8, 10, 12].map((pt) => (
+              <button
+                key={pt}
+                className={"seg-item" + (aiFontSize === pt ? " on" : "")}
+                onClick={() => setAiFontSize(pt)}
+              >
+                {pt}
+              </button>
+            ))}
+          </div>
+        </div>
+      </SetCard>
+
+      <SetCard
+        title="代码块"
+        icon={
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 7l-5 5 5 5" />
+            <path d="M15 7l5 5-5 5" />
+          </svg>
+        }
+      >
+        <div className="set-row">
+          <span className="label-text">
+            代码块自动识别
+            <InfoTip text="打开后粘贴代码会询问是否添加为代码块；关闭后只能手动添加" />
+          </span>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              className="toggle-state"
+              checked={autoDetect}
+              onChange={(e) => setAutoDetect(e.target.checked)}
+            />
+            <span className="indicator" />
+          </label>
+        </div>
+      </SetCard>
     </div>
   );
 
@@ -702,7 +941,12 @@ export default function SettingsDialog({
                     <span className="set-menu-name">
                       {item.name}
                       {item.key === "ai" && !aiQuota?.member && !aiQuota?.free && (
-                        <span className="set-menu-badge">会员</span>
+                        <span
+                          className="set-menu-dot"
+                          role="img"
+                          aria-label="未开通 AI 会员"
+                          title="未开通 AI 会员"
+                        />
                       )}
                     </span>
                     <span className="set-menu-desc">{item.desc}</span>
@@ -757,6 +1001,15 @@ export default function SettingsDialog({
             </div>
           </div>
         </div>
+      )}
+
+      {/* 修改密码：二级界面（4.1.8）。渲染在最外层，盖在设置卡片之上 */}
+      {pwdOpen && authToken && (
+        <ChangePasswordDialog
+          token={authToken}
+          onClose={() => setPwdOpen(false)}
+          onChanged={handlePasswordChanged}
+        />
       )}
     </div>
   );

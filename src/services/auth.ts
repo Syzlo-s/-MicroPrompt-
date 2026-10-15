@@ -168,6 +168,51 @@ export async function authRefresh(token: string): Promise<AuthResponse> {
 }
 
 /**
+ * 修改密码（4.1.8 新增，服务端 POST /api/change-password）。
+ *
+ * 约定：
+ *   · 必须带当前登录令牌；服务端身份只从令牌取，不接受客户端传用户名；
+ *   · **必须提供原密码**（服务端会校验）—— 手机被临时借用时不能直接改掉密码；
+ *   · 新密码 8~128 位，且不能与原密码相同；
+ *   · 成功后服务端会把凭证版本 +1：**其它设备上的旧登录立刻失效**，
+ *     同时返回一张新令牌给当前设备 —— 所以调用方要把返回的 token 存回去，
+ *     否则当前设备也会被自己踢下线。
+ *
+ * @returns 新的 access_token（调用方需用它替换本地保存的令牌）
+ */
+export async function changePassword(
+  token: string,
+  oldPassword: string,
+  newPassword: string,
+): Promise<string> {
+  let res: Response;
+  try {
+    res = await fetch(`${CASDOOR_URL}/api/change-password`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ oldPassword, newPassword }),
+    });
+  } catch {
+    throw new Error("无法连接服务器，请检查网络或服务器地址");
+  }
+  const data = (await res.json().catch(() => ({}))) as {
+    status?: string;
+    msg?: string;
+    data?: { access_token?: string };
+  };
+  if (!res.ok) {
+    throw new Error(data.msg || "登录状态已失效，请重新登录");
+  }
+  if (data.status !== "ok" || !data.data?.access_token) {
+    throw new Error(data.msg || "修改密码失败，请稍后重试");
+  }
+  return data.data.access_token;
+}
+
+/**
  * 上传头像文件到 Casdoor（/api/upload-resource），返回图片 URL。
  * @param token 当前登录用户的 access_token
  * @param file  头像图片文件

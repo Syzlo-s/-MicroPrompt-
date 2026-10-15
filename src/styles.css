@@ -31,6 +31,10 @@
   --c-press: #e0e7ff; /* indigo-100 */
   --c-paper: #fff8e7;
   --c-white: #ffffff;
+  /* 开关 / 分段开关的轨道底色（4.1.8）：以前是写死的拟物阴影（#fff 高光 + #d1d9e6），
+     和卡片边框一碰就是一条硬分界；现在统一成"跟随主题的浅轨道" */
+  --c-track: #e9edf6;
+  --c-knob-shadow: 0 1px 3px rgba(15, 23, 42, 0.22);
   --c-close-hover: #f87171; /* red-400 柔和 */
   --c-close-press: #ef4444;
   --c-red: #ef4444; /* red-500 */
@@ -663,6 +667,10 @@ input {
   min-height: 0;
   overflow-y: auto;
   position: relative;
+  /* 关掉浏览器的滚动锚定：AI 润色框插入 / 生成 / 折叠展开时高度会变，
+     锚定补偿会自己改 scrollTop，看起来就是「方框一展开画面自己动了」。
+     关掉后配合 pinScroll()，方框始终从当前位置就地展开。 */
+  overflow-anchor: none;
 }
 
 .editor-scroll.mp-fade-out {
@@ -2207,6 +2215,13 @@ body,
   font-size: 12px;
   color: var(--c-text);
 }
+/* 开关（4.1.8 重做外观）：
+   旧版是拟物 Soft-UI —— 外侧 #ffffff 高光 + #d1d9e6 投影、内侧再来两层 inset，
+   这种"用纯白/纯灰画光影"的做法只在纯白背景上勉强成立：
+   开关落在卡片里时，白色高光紧贴卡片边框，看上去就是一条特别明显的分界线
+   （护眼模式、换主题色后更明显）。
+   现在改成：轨道用统一的浅色 --c-track（做平、不描边），滑块用真实的下投影，
+   颜色全部走变量 —— 换主题、开护眼模式都不会再出现硬边。 */
 .toggle {
   isolation: isolate;
   position: relative;
@@ -2216,10 +2231,9 @@ body,
   border-radius: 15px;
   overflow: hidden;
   flex: none;
-  box-shadow: -8px -4px 8px 0px #ffffff,
-    8px 4px 12px 0px #d1d9e6,
-    4px 4px 4px 0px #d1d9e6 inset,
-    -4px -4px 4px 0px #ffffff inset;
+  background: var(--c-track);
+  /* 4.1.8：轨道做平 —— 不画写死的白/灰光影，也不留 1px 硬边框线；
+     深度交给滑块自己的投影表达，这样开关边缘不会出现第二条边 */
 }
 .toggle-state {
   display: none;
@@ -2228,16 +2242,17 @@ body,
   display: block;
   height: 100%;
   width: 200%;
-  background: #ecf0f3;
+  background: #ffffff;
   border-radius: 15px;
   transform: translate3d(-75%, 0, 0);
   transition: transform 0.4s cubic-bezier(0.85, 0.05, 0.18, 1.35),
     background-color 0.4s var(--ease-out-cubic);
-  box-shadow: -8px -4px 8px 0px #ffffff, 8px 4px 12px 0px #d1d9e6;
+  box-shadow: var(--c-knob-shadow);
 }
 .toggle-state:checked ~ .indicator {
   transform: translate3d(25%, 0, 0);
   background-color: var(--c-brand);
+  box-shadow: 0 1px 3px rgba(var(--brand-rgb), 0.4);
 }
 
 /* ============================================================
@@ -2252,8 +2267,8 @@ body,
   width: 100%;
   height: 10px;
   border-radius: 999px;
-  background: #e6ebf4;
-  box-shadow: inset 2px 2px 4px #d1d9e6, inset -2px -2px 4px #ffffff;
+  background: var(--c-track);
+  /* 4.1.8：与开关统一 —— 平轨道，不再用写死的白/灰画光影 */
   outline: none;
   cursor: pointer;
 }
@@ -3195,8 +3210,7 @@ body,
   border-radius: 15px;
   overflow: hidden;
   isolation: isolate;
-  box-shadow: -8px -4px 8px 0px #ffffff, 8px 4px 12px 0px #d1d9e6,
-    4px 4px 4px 0px #d1d9e6 inset, -4px -4px 4px 0px #ffffff inset;
+  background: var(--c-track);
 }
 .seg-item {
   position: relative;
@@ -3221,8 +3235,8 @@ body,
   width: 32px;
   height: 30px;
   border-radius: 15px;
-  background: #ecf0f3;
-  box-shadow: -8px -4px 8px 0px #ffffff, 8px 4px 12px 0px #d1d9e6;
+  background: #ffffff;
+  box-shadow: var(--c-knob-shadow);
   transform: translate3d(0, 0, 0);
   transition: transform 0.4s cubic-bezier(0.85, 0.05, 0.18, 1.35),
     background-color 0.4s var(--ease-out-cubic);
@@ -3730,22 +3744,6 @@ button:focus-visible,
   transform: translateY(-1px);
   background: var(--c-brand-strong);
 }
-.ai-toast {
-  position: fixed;
-  top: 18px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 500;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 16px;
-  border-radius: 12px;
-  background: rgba(20, 24, 34, 0.92);
-  color: #ffffff;
-  font-size: 12.5px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
-}
 
 /* ============================================================
    AI 润色（4.0.0）：
@@ -3988,36 +3986,77 @@ button:focus-visible,
 .ai-block {
   font-size: var(--ai-font-size, 8pt);
   position: relative;
-  padding-right: 34px;
 }
-.ai-block-toggle {
+/* 标题给右上角操作条让位，避免长标题钻到按钮下面 */
+.ai-block-title {
+  padding-right: 76px;
+}
+
+/* —— 润色框右上角操作条：复制 / 折叠 / 删除（悬停或聚焦时显现） —— */
+.ai-block-tools {
   position: absolute;
-  top: 6px;
-  right: 6px;
-  width: 22px;
-  height: 22px;
+  top: 5px;
+  right: 5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  padding: 0 2px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow: 0 2px 10px -6px rgba(15, 23, 42, 0.35);
+  opacity: 0;
+  transform: translateY(-2px);
+  pointer-events: none;
+  transition: opacity 0.18s var(--ease-out-cubic),
+    transform 0.18s var(--ease-out-cubic);
+  z-index: 3;
+}
+.ai-block:hover .ai-block-tools,
+.ai-block:focus-within .ai-block-tools,
+.ai-block.generating .ai-block-tools {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+.ai-block-btn {
+  width: 21px;
+  height: 21px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: none;
   background: transparent;
   color: rgb(var(--brand-rgb));
-  opacity: 0.72;
+  opacity: 0.78;
   cursor: pointer;
-  border-radius: 6px;
-  z-index: 2;
+  border-radius: 7px;
   transition: opacity 0.15s var(--ease-out-cubic),
-    background-color 0.15s var(--ease-out-cubic);
+    background-color 0.15s var(--ease-out-cubic),
+    color 0.15s var(--ease-out-cubic);
 }
-.ai-block-toggle:hover {
+.ai-block-btn:hover {
   opacity: 1;
   background: rgba(var(--brand-rgb), 0.1);
 }
-.ai-block-toggle svg {
-  transition: transform 0.25s var(--ease-out-cubic);
+.ai-block-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+  background: transparent;
 }
-.ai-block.collapsed .ai-block-toggle svg {
+.ai-block-btn.danger:hover {
+  color: var(--c-red);
+  background: rgba(239, 68, 68, 0.12);
+}
+/* 折叠箭头方向：展开=朝上（点一下收起），折叠=朝下（点一下展开）
+   SVG 本身画的是朝下的 V，所以「展开」态整体翻转 180°。 */
+.ai-block .ai-block-btn.chev svg {
+  transition: transform 0.25s var(--ease-out-cubic);
   transform: rotate(180deg);
+}
+.ai-block.collapsed .ai-block-btn.chev svg {
+  transform: none;
 }
 /* 折叠 / 展开动画：仅正文参与高度过渡；标题始终显示、样式不变 */
 .ai-block-title {
@@ -4054,29 +4093,124 @@ button:focus-visible,
   background: transparent !important;
 }
 
-/* 双击方框复制后的「已复制」提示徽章 */
-.ai-block-copied {
-  position: absolute;
-  top: -10px;
-  right: 32px;
-  padding: 2px 9px;
-  border-radius: 9px;
-  background: rgba(20, 24, 34, 0.9);
-  color: #ffffff;
-  font-size: 11px;
-  line-height: 1.6;
+/* ============================================================
+   统一轻提示 Toast（复制 / 删除 / 额度 / 失败 等一次性反馈）
+   - 位于顶栏下方居中，随「界面大小」缩放
+   - 成功 / 失败 / 警告 / 信息 四种语义色，各带图标
+   ============================================================ */
+.mp-toast-layer {
+  position: fixed;
+  top: 46px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 900;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
   pointer-events: none;
-  z-index: 3;
-  animation: ai-copied-in 0.2s var(--ease-out-cubic);
 }
-@keyframes ai-copied-in {
+.mp-toast {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 430px;
+  padding: 7px 13px 7px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(23, 26, 35, 0.9);
+  color: #ffffff;
+  font-size: 12px;
+  line-height: 1.5;
+  box-shadow: 0 12px 28px -12px rgba(15, 23, 42, 0.6),
+    0 2px 8px -4px rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(10px) saturate(1.35);
+  -webkit-backdrop-filter: blur(10px) saturate(1.35);
+  pointer-events: auto;
+  animation: mp-toast-in 0.26s var(--ease-out-back) both;
+}
+.mp-toast.leaving {
+  animation: mp-toast-out 0.18s var(--ease-in-cubic) both;
+}
+.mp-toast-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  flex: none;
+  border-radius: 999px;
+  color: #ffffff;
+}
+.mp-toast-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.mp-toast-action {
+  flex: none;
+  margin-left: 2px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s var(--ease-out-cubic),
+    border-color 0.15s var(--ease-out-cubic);
+}
+.mp-toast-action:hover {
+  background: rgba(255, 255, 255, 0.22);
+  border-color: rgba(255, 255, 255, 0.45);
+}
+/* 语义色：图标底 + 一圈同色描边（暗色玻璃上仍然分得清） */
+.mp-toast.tone-success {
+  border-color: rgba(52, 211, 153, 0.42);
+}
+.mp-toast.tone-success .mp-toast-ico {
+  background: linear-gradient(135deg, #34d399, #10b981);
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.16);
+}
+.mp-toast.tone-error {
+  border-color: rgba(248, 113, 113, 0.42);
+}
+.mp-toast.tone-error .mp-toast-ico {
+  background: linear-gradient(135deg, #fb7185, #ef4444);
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.16);
+}
+.mp-toast.tone-warn {
+  border-color: rgba(251, 191, 36, 0.42);
+}
+.mp-toast.tone-warn .mp-toast-ico {
+  background: linear-gradient(135deg, #fbbf24, #f59e0b);
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.16);
+}
+.mp-toast.tone-info {
+  border-color: rgba(var(--brand-rgb), 0.45);
+}
+.mp-toast.tone-info .mp-toast-ico {
+  background: linear-gradient(135deg, rgba(var(--brand-rgb), 1), rgb(var(--brand-strong-rgb)));
+  box-shadow: 0 0 0 3px rgba(var(--brand-rgb), 0.16);
+}
+@keyframes mp-toast-in {
   from {
     opacity: 0;
-    transform: translateY(3px);
+    transform: translateY(-9px) scale(0.96);
   }
   to {
     opacity: 1;
     transform: none;
+  }
+}
+@keyframes mp-toast-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-7px) scale(0.98);
   }
 }
 
@@ -4273,6 +4407,267 @@ button:focus-visible,
   border: 2px solid transparent;
   border-radius: 4px;
   background-clip: padding-box;
+}
+
+/* ============================================================
+   设置：分组卡片（4.1.8 重设计）
+   ------------------------------------------------------------
+   用户页 / AI 助手页从"一列平铺的 label + 控件"改成"分组卡片"：
+   二级页背景压成 --c-window 的浅灰（像一页设置），卡片是白底 + 1px 描边，
+   卡片内的小标题带一个淡靛蓝图标块。这样一屏能看出"这几项是一组"。
+   ============================================================ */
+.set-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.set-card {
+  background: #ffffff;
+  border: 1px solid #e8edf5;
+  border-radius: 1.1rem;
+  padding: 12px 13px 11px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.set-card-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 9px;
+}
+
+.set-card-ico {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  background: var(--c-hover);
+  color: var(--c-brand);
+}
+
+.set-card-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+
+.set-card-extra,
+.set-card-note {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--c-text-aux);
+}
+
+/* 卡片内的设置行：比全局稍高一点，行与行之间用极细线分隔 */
+.set-card .set-row {
+  padding: 7px 0;
+}
+.set-card .set-row + .set-row {
+  border-top: 1px solid var(--c-border);
+}
+.set-card .set-row-quiet {
+  padding-top: 9px;
+}
+.set-card-input {
+  margin-bottom: 10px;
+}
+.set-card-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* 设置里的"小号按钮"（卡片内的行内操作：修改 / 退出 / 复制邮箱） */
+.btn-sm {
+  padding: 5px 12px;
+  border-radius: 0.7rem;
+  font-size: 11.5px;
+  box-shadow: 0 2px 6px -2px rgba(15, 23, 42, 0.12);
+}
+.btn-sm:hover {
+  transform: none;
+  box-shadow: 0 4px 10px -3px rgba(var(--brand-rgb), 0.3);
+}
+
+/* ============================================================
+   设置：用户页的账号卡（头像 + 身份标签）
+   ============================================================ */
+.acc-hero {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.acc-hero-avatar {
+  position: relative;
+  width: 58px;
+  height: 58px;
+  flex: none;
+  border-radius: 1.1rem;
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--c-hover);
+  box-shadow: 0 6px 16px -6px rgba(var(--brand-rgb), 0.5);
+  transition: transform 0.2s var(--ease-out-cubic),
+    box-shadow 0.2s var(--ease-out-cubic);
+}
+.acc-hero-avatar:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 22px -8px rgba(var(--brand-rgb), 0.6);
+}
+.acc-hero-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.acc-hero-avatar input {
+  display: none;
+}
+.acc-hero-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.acc-hero-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--c-text);
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.acc-hero-tags {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.acc-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--c-text-sub);
+  background: #f1f5f9;
+}
+.acc-chip.is-member {
+  color: var(--c-brand-strong);
+  background: var(--c-hover);
+}
+.acc-chip.is-unlimited {
+  color: #b45309;
+  background: #fef3c7;
+}
+.acc-hero-tip {
+  font-size: 10.5px;
+  color: var(--c-text-aux);
+}
+.acc-card .acc-avatar-reset {
+  margin-top: 10px;
+  width: 100%;
+}
+
+/* ============================================================
+   修改密码：二级界面（4.1.8）
+   盖在设置卡片之上的一层小窗；结构沿用 .dialog-overlay/.dialog-panel，
+   只是更窄、字段带右侧"显示密码"按钮。
+   ============================================================ */
+.pwd-overlay {
+  z-index: 400;
+  background: rgba(15, 23, 42, 0.26);
+}
+.pwd-panel {
+  width: 306px;
+  animation: mp-pop-in 0.2s var(--ease-out-cubic) both;
+}
+.pwd-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.pwd-head-ico {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.8rem;
+  background: var(--c-hover);
+  color: var(--c-brand);
+}
+.pwd-title {
+  margin-bottom: 2px;
+}
+.pwd-sub {
+  font-size: 10.5px;
+  color: var(--c-text-aux);
+}
+.pwd-field {
+  margin-bottom: 11px;
+}
+.pwd-field-label {
+  font-size: 11.5px;
+  color: var(--c-text-sub);
+  margin-bottom: 5px;
+}
+.pwd-input-wrap {
+  position: relative;
+}
+.pwd-input {
+  margin-bottom: 0;
+  padding-right: 42px;
+  letter-spacing: 0.02em;
+}
+.pwd-eye {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 0.6rem;
+  background: transparent;
+  color: var(--c-text-aux);
+  cursor: pointer;
+  transition: background-color 0.16s var(--ease-out-cubic),
+    color 0.16s var(--ease-out-cubic);
+}
+.pwd-eye:hover,
+.pwd-eye.on {
+  background: var(--c-hover);
+  color: var(--c-brand);
+}
+.pwd-hint {
+  margin: 2px 0 14px;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--c-text-aux);
+  min-height: 30px;
+}
+.pwd-hint.is-err {
+  color: var(--c-red);
+}
+.pwd-hint.is-ok {
+  color: #059669;
+}
+.pwd-actions {
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* 二级设置页：背景压成浅灰，让白色分组卡片浮出来 */
+.settings-sub-layer .sub-panel {
+  background: var(--c-window);
 }
 
 /* ============================================================
@@ -4495,58 +4890,248 @@ button:focus-visible,
    4.0.2：AI 会员 / 额度（设置页卡片 + 开通弹窗）
    ============================================================ */
 
-/* —— 一级菜单上的「会员」小标签（未开通时提示 AI 是付费功能）—— */
-.set-menu-badge {
+/* —— 一级菜单上的小圆点（未开通时提示 AI 是付费功能）——
+   4.1.2：原来是一枚橙色「会员」小标签，太抢眼，换成 5px 的浅琥珀圆点，
+   只留一点「这里还有东西没开」的暗示，鼠标悬停才给出文字说明。 */
+.set-menu-dot {
   display: inline-block;
-  margin-left: 6px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  font-size: 9.5px;
-  line-height: 1.5;
-  font-weight: 600;
-  color: #fff;
-  background: linear-gradient(135deg, #f0a020, #e8791b);
-  box-shadow: 0 1px 4px rgba(232, 121, 27, 0.35);
-  vertical-align: 1px;
+  width: 5px;
+  height: 5px;
+  margin-left: 5px;
+  border-radius: 50%;
+  background: rgba(240, 160, 32, 0.5);
+  vertical-align: 1.5px;
 }
 
-/* —— 设置 → AI 助手：会员 / 额度卡片 —— */
-.ai-member-card {
+/* —— 设置 → AI 助手：会员 / 额度卡片（4.1.2 重设计）—— */
+.ai-plan-card {
+  position: relative;
   margin-top: 6px;
-  padding: 11px 12px;
+  padding: 12px;
   border-radius: 0.9rem;
-  background: rgba(var(--brand-rgb), 0.05);
-  border: 1px solid var(--c-border);
+  background: linear-gradient(
+    180deg,
+    rgba(var(--brand-rgb), 0.07),
+    rgba(var(--brand-rgb), 0.03)
+  );
+  border: 1px solid rgba(var(--brand-rgb), 0.16);
+  overflow: hidden;
 }
-.ai-member-line {
+/* 生效中：整体换成品牌色的轻描边 + 更实的底 */
+.ai-plan-card.is-member,
+.ai-plan-card.is-unlimited {
+  background: linear-gradient(
+    180deg,
+    rgba(var(--brand-rgb), 0.13),
+    rgba(var(--brand-rgb), 0.05)
+  );
+  border-color: rgba(var(--brand-rgb), 0.3);
+}
+.ai-plan-card.is-warn {
+  background: linear-gradient(180deg, rgba(245, 158, 11, 0.1), rgba(245, 158, 11, 0.04));
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.ai-plan-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.ai-plan-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  margin-top: 1px;
+  border-radius: 8px;
+  color: #fff;
+  background: linear-gradient(135deg, rgb(var(--brand-rgb)), rgb(var(--brand-strong-rgb)));
+  box-shadow: 0 4px 10px -6px rgba(var(--brand-rgb), 0.9);
+}
+.ai-plan-card.is-warn .ai-plan-ico {
+  background: linear-gradient(135deg, #fbbf24, #f59e0b);
+  box-shadow: 0 4px 10px -6px rgba(245, 158, 11, 0.9);
+}
+.ai-plan-headtext {
+  flex: 1;
+  min-width: 0;
+}
+.ai-plan-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.ai-plan-name {
   font-size: 12.5px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--c-text);
-  word-break: break-all;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-/* 额度取不到时（服务端旧版 / 需重新登录 / 离线账号）用琥珀色提示，不当作崩溃 */
-.ai-member-line.warn {
-  color: #b45309;
-  font-weight: 500;
+.ai-plan-chip {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1.6;
+  color: var(--c-text-sub);
+  background: rgba(15, 23, 42, 0.06);
 }
-.ai-member-sub {
+.ai-plan-chip.on {
+  color: #fff;
+  background: linear-gradient(135deg, rgb(var(--brand-rgb)), rgb(var(--brand-strong-rgb)));
+  box-shadow: 0 1px 4px rgba(var(--brand-rgb), 0.45);
+}
+.ai-plan-card.is-warn .ai-plan-chip {
+  color: #fff;
+  background: linear-gradient(135deg, #fbbf24, #f59e0b);
+}
+.ai-plan-desc {
   margin-top: 2px;
   font-size: 10.5px;
-  color: var(--c-text-aux);
+  line-height: 1.5;
+  color: var(--c-text-sub);
 }
-.ai-member-actions {
+
+/* 刷新：右上角图标按钮，加载时转圈 */
+.ai-plan-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 7px;
+  color: rgb(var(--brand-rgb));
+  opacity: 0.7;
+  transition: opacity 0.15s var(--ease-out-cubic),
+    background-color 0.15s var(--ease-out-cubic);
+}
+.ai-plan-refresh:hover:not(:disabled) {
+  opacity: 1;
+  background: rgba(var(--brand-rgb), 0.12);
+}
+.ai-plan-refresh:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ai-plan-refresh.spinning svg {
+  animation: ai-plan-spin 0.9s linear infinite;
+}
+@keyframes ai-plan-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 今日剩余额度条：整条代表 100%，只给比例、不显示数字
+   —— 数字（今日已用 N/上限）会把「防滥用上限」显示成用户额度，故不展示 */
+.ai-plan-meter {
+  margin-top: 10px;
+}
+.ai-plan-meter-bar {
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.08);
+  overflow: hidden;
+}
+.ai-plan-meter.is-empty .ai-plan-meter-bar {
+  background: rgba(239, 68, 68, 0.16);
+}
+.ai-plan-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgb(var(--brand-rgb)), rgb(var(--brand-strong-rgb)));
+  transition: width 0.35s var(--ease-out-cubic);
+}
+/* 剩余不足两成：转琥珀→红，给一个不需要读数字的提示 */
+.ai-plan-meter-fill.low {
+  background: linear-gradient(90deg, #fbbf24, #ef4444);
+}
+
+/* 不限量（管理员开通）：一条循环流动的条，只表示「没有上限」
+   —— 不加文字、不加装饰，就是同一根条在跑 */
+.ai-plan-meter.is-infinite .ai-plan-meter-bar {
+  background: rgba(var(--brand-rgb), 0.1);
+}
+.ai-plan-meter.is-infinite .ai-plan-meter-fill {
+  width: 40%;
+  transition: none;
+  animation: ai-meter-run 1.7s ease-in-out infinite;
+}
+@keyframes ai-meter-run {
+  0% {
+    transform: translateX(-105%);
+  }
+  100% {
+    transform: translateX(255%);
+  }
+}
+/* 关了动效偏好时给一条满条：别让 40% 的滑块看着像「只剩四成」 */
+@media (prefers-reduced-motion: reduce) {
+  .ai-plan-meter.is-infinite .ai-plan-meter-fill {
+    width: 100%;
+    transform: none;
+    animation: none;
+  }
+}
+
+/* 套餐价位：两张小卡 */
+.ai-plan-prices {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+.ai-plan-price {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 5px 8px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--c-border);
+  font-size: 10px;
+  color: var(--c-text-aux);
+  white-space: nowrap;
+}
+.ai-plan-price b {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--c-text-sub);
+}
+.ai-plan-price i {
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 700;
+  color: rgb(var(--brand-rgb));
+}
+.ai-plan-price em {
+  font-style: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ai-plan-actions {
   display: flex;
   gap: 8px;
-  margin-top: 9px;
+  margin-top: 10px;
 }
-.ai-member-actions .btn {
+.ai-plan-actions .btn {
   flex: 1;
   justify-content: center;
 }
 
-/* 有缓存额度但刷新失败：提醒用户这是旧数据 */
-.ai-member-stale {
-  margin-top: 5px;
+.ai-plan-note {
+  margin-top: 7px;
+  font-size: 10.5px;
+  line-height: 1.5;
   color: #b45309;
 }
 

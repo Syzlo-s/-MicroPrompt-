@@ -18,7 +18,9 @@ import { useStore } from "../store";
 import { clamp, uid } from "../utils";
 import { analyzeCodeBlock } from "../utils/codeBlockAnalyzer";
 import { handleCodeRefblockCopy } from "../utils/clipboardCodeBlock";
+import { pinScroll } from "../utils/scrollPin";
 import { polishText, AiError, AI_MAX_CHARS } from "../services/ai";
+import { showToast } from "../utils/toast";
 import Icon from "./Icon";
 import { ContextMenu } from "./context-menu";
 import { ConfirmDialog, InputDialog } from "./dialogs";
@@ -298,7 +300,6 @@ export default function EditorArea() {
   const [aiBtn, setAiBtn] = useState<{ from: number; to: number } | null>(null);
   const [aiBtnPos, setAiBtnPos] = useState({ x: 0, y: 0 });
   const [aiBusy, setAiBusy] = useState(false);
-  const [aiToast, setAiToast] = useState("");
   const aiHintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 上下模糊效果的显隐：
@@ -460,16 +461,21 @@ export default function EditorArea() {
       if (text.length > AI_MAX_CHARS) {
         if (aiHintTimer.current) clearTimeout(aiHintTimer.current);
         setAiBtn(null);
-        setAiToast(
-          `选中内容 ${text.length} 字，超过单次上限 ${AI_MAX_CHARS} 字：请分段选中后再润色`,
-        );
-        window.setTimeout(() => setAiToast(""), 4200);
+        showToast({
+          text: `选中内容 ${text.length} 字，超过单次上限 ${AI_MAX_CHARS} 字：请分段选中后再润色`,
+          tone: "warn",
+          duration: 4200,
+        });
         return;
       }
       if (aiHintTimer.current) clearTimeout(aiHintTimer.current);
       setAiBtn(null);
       setAiBusy(true);
-      setAiToast("");
+
+      // 方框插入 + 逐段生成期间把编辑区滚动位置钉住：
+      // 方框就在用户点「AI 润色」的位置就地展开，画面不自动滚。
+      // （下面的 finally 里会 release(600) 再钉 600ms，吸收最后的光标重定位）
+      const releaseScrollPin = pinScroll(scrollRef.current, 30000);
 
       // 插入点：选区末尾所在段落之后（避免插入到文字中间导致错位）
       const $to = ed.state.doc.resolve(to);
@@ -490,7 +496,9 @@ export default function EditorArea() {
       const pos = endPos;
       const setBox = (t: string, generating: boolean) => {
         const cur = ed.state.doc.nodeAt(pos);
-        if (!cur) return;
+        // 方框可能已被用户删除（或位置被其它编辑改动）——此时不能再改属性，
+        // 否则会把普通段落当成 AI 方框来写，造成内容错乱。
+        if (!cur || cur.type.name !== "aiBlock") return;
         ed.view.dispatch(
           ed.state.tr.setNodeMarkup(pos, undefined, {
             ...cur.attrs,
@@ -526,6 +534,9 @@ export default function EditorArea() {
         ) {
           ed.chain().insertContentAt(after, { type: "paragraph" }).run();
         }
+        // 光标落到方框下方（方便接着写），但画面不跟着滚：
+        // 否则整页会瞬间跳到方框底部，用户会以为界面自己动了。
+        pinScroll(scrollRef.current, 500);
         ed.commands.focus(after + 1);
       } catch (e) {
         const code = e instanceof AiError ? e.code : "error";
@@ -536,9 +547,11 @@ export default function EditorArea() {
         if (boxNode && boxNode.type.name === "aiBlock") {
           ed.view.dispatch(ed.state.tr.delete(pos, pos + boxNode.nodeSize));
         }
-        setAiToast(msg);
-        window.setTimeout(() => setAiToast(""), 3600);
-        // 免费额度用完 → 直接弹出开通会员窗口；
+        showToast({
+          text: msg,
+          tone: code === "rate_limited" ? "warn" : "error",
+          duration: 4200,
+        });        // 免费额度用完 → 直接弹出开通会员窗口；
         // 会员达到防滥用上限则不再弹（他已经是会员），只提示联系客服
         if (code === "free_exhausted") {
           const store = useStore.getState();
@@ -548,6 +561,8 @@ export default function EditorArea() {
           void useStore.getState().refreshAiQuota();
         }
       } finally {
+        // 再多钉 600ms：让「光标重定位」这类异步自动滚动也落空
+        releaseScrollPin(600);
         setAiBusy(false);
       }
     },
@@ -1200,9 +1215,6 @@ export default function EditorArea() {
         </button>,
         document.body,
       )}
-
-      {aiToast &&
-        createPortal(<div className="ai-toast">{aiToast}</div>, document.body)}
 
       {refMenu && (
         <ContextMenu
