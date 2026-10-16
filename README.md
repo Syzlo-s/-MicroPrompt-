@@ -5,7 +5,7 @@ Tauri 2 + React 19 + TypeScript + Vite 桌面速记应用（Web 技术栈迁移�
 ## 🚀 10 分钟极速复现指南（评审快速上手）
 
 > 目标：从零到「窗口打开、能写笔记、能注册登录」**不超过 10 分钟**。
-> 下列命令均在 **Windows 10/11 x64 + PowerShell** 实测通过（客户端 v4.1.8 / 服务端 v4.1.8，2026-10-15）。
+> 下列命令均在 **Windows 10/11 x64 + PowerShell** 实测通过（客户端 v4.5.0 / 服务端 v4.5.0，2026-10-15）。
 
 ### 0. 前置环境（约 3 分钟）
 
@@ -79,7 +79,7 @@ python ai_server.py        # 主服务 2581；账号接口额外监听 2580
 
 - [ ] 窗口打开，顶栏显示「轻提词」，左侧笔记列表可新建/切换
 - [ ] 在编辑器输入文字后，`%APPDATA%\DesktopNotesDev\DesktopNotes\notes.json` 里能看到内容
-- [ ] `curl http://127.0.0.1:2581/ai/health` 返回 `{"ok": true, "service": "microprompt-ai", "version": "4.1.8", ...}`
+- [ ] `curl http://127.0.0.1:2581/ai/health` 返回 `{"ok": true, "service": "microprompt-ai", "version": "4.5.0", ...}`
 - [ ] `python server_ai/selfcheck.py` 全项 `[OK]`
 - [ ] 登录页注册一个账号 → 立刻登录成功（账号密码只存 PBKDF2 哈希）
 - [ ] 后台 `/admin` 能打开：概览页 4 张 KPI 卡片 + 趋势图，右上角状态点是绿的（表示每 2 秒在同步）
@@ -120,7 +120,7 @@ npm run tauri build        # 产物：<target>\release\microprompt-v4.exe + NSIS
 | 提示缺少 `WebView2Loader.dll` | Tauri 运行时 DLL 没随 exe 一起拷 | 与 exe 放同一目录（`build.ps1` 会自动复制） |
 | 登录报「无法连接服务器」 | 账号服务（2580）没起来 | 确认服务端 `MP_AUTH_MODE=builtin` 且 2580 在监听 |
 | 打包出的包"能装能开但登录凭据为空" | `.env` 缺失或没填 | 构建前先跑 `npm run preflight`（会一次性核对凭据与 6 处客户端版本号） |
-| 双击安装包弹「Windows 已保护你的电脑」 | 安装包**没有数字签名**，SmartScreen 对「无法识别的应用」一律先拦 | 点「更多信息」→「仍要运行」；或用同目录的 `双击安装_轻提词4.1.8.bat`（由 cmd 拉起，SmartScreen 不拦） |
+| 双击安装包弹「Windows 已保护你的电脑」 | 安装包**没有数字签名**，SmartScreen 对「无法识别的应用」一律先拦 | 点「更多信息」→「仍要运行」；或用同目录的 `双击安装_轻提词4.5.0.bat`（由 cmd 拉起，SmartScreen 不拦） |
 | 安装包能生成、大小也对，但装不上去 | 4.1.8 实测：NSIS 路线打出来的包**偶发不可用**（静默安装什么都不装、退出码仍是 0；手动双击报「无法打开要写入的文件」） | 换 Inno 路线重打（`ISCC.exe src-tauri\inno\setup.iss`），并用 `node scripts/verify-installer.mjs` 真机验一次再发 |
 | `.\build.ps1` 报 `Join-Path ... NullNotAllowed` | `build.ps1` 曾是 UTF-8 无 BOM，Windows PowerShell 5.1 按 GBK 读 → 中文注释吃掉换行、脚本被解析坏 | 已修（加了 BOM）；若你改了该文件，记得存成 **UTF-8 with BOM** |
 
@@ -230,15 +230,14 @@ npm run build:checked
 #    —— `npm run preflight` 会一次性核对这 6 处
 # ℹ️ 服务端（server_ai\ai_server.py 的 VERSION）是**独立**版本号：服务端可以单独发版
 #    （例如 4.1.2~4.1.7 只改后台与接口，桌面端停在 4.1.1、用户不用重装；
-#    4.1.8 两边一起发：客户端加了自助改密与设置页重设计，所以版本串统一到 4.1.8）。
+#    4.1.8 起服务端加了自助改密；4.5.0 起两边同号发布（客户端 6 处与服务端 VERSION 一起改）。
 #    preflight 只要求它「不落后于客户端」，不要求相等。
 #
-# ℹ️ 4.1.8 实况（两条路线，发布走 Inno）：
-#    实际发布的 `轻提词安装包_v4.1.8.exe` 是 **Inno Setup** 编译出来的（`ISCC.exe src-tauri\inno\setup.iss`），
-#    3,498,250 字节（约 3.3 MB），MD5 963bc1f92570c3d7ba6c296cb9432aac；
+# ℹ️ 4.5.0 实况（两条路线，发布走 Inno）：
+#    实际发布的 `轻提词安装包_v4.5.0.exe` 是 **Inno Setup** 编译出来的（`ISCC.exe src-tauri\inno\setup.iss`）；
 #    另一条 `npm run tauri build` 的 NSIS 路线（tauri.conf.json 的 bundle.targets=["nsis"]）
-#    产出 `轻提词_4.1.8_x64-setup.exe`（约 1.7 MB）—— 4.1.8 实测这个包**不可靠**
-#    （同一份文件先能装、后来静默安装什么都不装），所以这次没用它。
+#    产出 `轻提词_4.5.0_x64-setup.exe`（约 1.7 MB）—— 4.1.8 实测这条路线**不可靠**
+#    （同一份文件先能装、后来静默安装什么都不装），所以发布不用它。
 #    **发版前两条都要同步版本串** —— preflight 会核对 setup.iss；打完包再跑
 #    `node scripts/verify-installer.mjs`（真机装一次、启动一次、卸载一次）才允许发出去。
 #    历史教训：4.1.0 / 4.1.1 两次发版都漏改了 setup.iss，它一度停在 4.0.3（2026-10-14 已修正）。
@@ -382,7 +381,7 @@ npm run build:checked
   平轨道 + 滑块下投影（边缘跳变 41 → 22，实测见 `比赛提交材料/02_演进记录`）
 - [ ] Phase 5（P3）**剩余部分**：CI 自动构建、增量更新、代码签名 —— **均未做**，目前发版全靠手工
 
-## 已知限制（客户端 v4.1.8 / 服务端 v4.1.8 · 2026-10-15 核对）
+## 已知限制（客户端 v4.5.0 / 服务端 v4.5.0 · 2026-10-15 核对）
 
 **界面 / 交互**
 

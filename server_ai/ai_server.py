@@ -152,7 +152,7 @@ PORT = int(os.environ.get("MP_PORT", "2581"))
 CASDOOR_URL = os.environ.get("MP_CASDOOR_URL", "http://127.0.0.1:2580").rstrip("/")
 
 # ---- 4.1.0 自建账号模块 ----
-VERSION = "4.1.8"
+VERSION = "4.5.0"
 # casdoor：令牌拿去问 Casdoor（4.0.3 的行为，默认，便于随时回滚）
 # builtin：令牌本地校验，并额外监听 MP_AUTH_PORT（客户端写死的 2580）
 AUTH_MODE = (os.environ.get("MP_AUTH_MODE", "casdoor") or "casdoor").strip().lower()

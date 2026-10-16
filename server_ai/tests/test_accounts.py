@@ -608,14 +608,14 @@ def main():
         check("accounts.json 进入启动备份名单（不能成为唯一没有兜底的数据）",
               any(f.startswith("accounts.") for f in files), str(files[:8]))
         code, d, _h = call(rest_ai, "/ai/health")
-        check("/ai/health 报告版本 4.1.8 与账号数",
-              code == 200 and d.get("version") == "4.1.8"
+        check("/ai/health 报告版本 4.5.0 与账号数",
+              code == 200 and d.get("version") == "4.5.0"
               and int(d.get("accounts") or 0) >= 2 and d.get("authMode") == "builtin",
               str(d)[:140])
 
-        # ---------------- 30 用户自己改密码（4.1.8 新增） ----------------
+        # ---------------- 30 用户自己改密码（4.5.0 新增） ----------------
         # 单独用一个账号，避免把前面用例依赖的 alice/pw123456 改掉
-        print("[30] 用户自己改密码 /api/change-password（4.1.8）")
+        print("[30] 用户自己改密码 /api/change-password（4.5.0）")
         call(AUTH, "/api/signup", "POST",
              {"username": "pwuser", "password": "pw123456"})
         tk_old = login_ok(AUTH, "pwuser", "pw123456")
