@@ -5,7 +5,7 @@ Tauri 2 + React 19 + TypeScript + Vite 桌面速记应用（Web 技术栈迁移�
 ## 🚀 10 分钟极速复现指南（评审快速上手）
 
 > 目标：从零到「窗口打开、能写笔记、能注册登录」**不超过 10 分钟**。
-> 下列命令均在 **Windows 10/11 x64 + PowerShell** 实测通过（客户端 v4.5.0 / 服务端 v4.5.0，2026-10-15）。
+> 下列命令均在 **Windows 10/11 x64 + PowerShell** 实测通过（客户端 v4.6.0 / 服务端 v4.6.0，2026-10-17）。
 
 ### 0. 前置环境（约 3 分钟）
 
@@ -79,7 +79,7 @@ python ai_server.py        # 主服务 2581；账号接口额外监听 2580
 
 - [ ] 窗口打开，顶栏显示「轻提词」，左侧笔记列表可新建/切换
 - [ ] 在编辑器输入文字后，`%APPDATA%\DesktopNotesDev\DesktopNotes\notes.json` 里能看到内容
-- [ ] `curl http://127.0.0.1:2581/ai/health` 返回 `{"ok": true, "service": "microprompt-ai", "version": "4.5.0", ...}`
+- [ ] `curl http://127.0.0.1:2581/ai/health` 返回 `{"ok": true, "service": "microprompt-ai", "version": "4.6.0", ...}`
 - [ ] `python server_ai/selfcheck.py` 全项 `[OK]`
 - [ ] 登录页注册一个账号 → 立刻登录成功（账号密码只存 PBKDF2 哈希）
 - [ ] 后台 `/admin` 能打开：概览页 4 张 KPI 卡片 + 趋势图，右上角状态点是绿的（表示每 2 秒在同步）
@@ -120,7 +120,8 @@ npm run tauri build        # 产物：<target>\release\microprompt-v4.exe + NSIS
 | 提示缺少 `WebView2Loader.dll` | Tauri 运行时 DLL 没随 exe 一起拷 | 与 exe 放同一目录（`build.ps1` 会自动复制） |
 | 登录报「无法连接服务器」 | 账号服务（2580）没起来 | 确认服务端 `MP_AUTH_MODE=builtin` 且 2580 在监听 |
 | 打包出的包"能装能开但登录凭据为空" | `.env` 缺失或没填 | 构建前先跑 `npm run preflight`（会一次性核对凭据与 6 处客户端版本号） |
-| 双击安装包弹「Windows 已保护你的电脑」 | 安装包**没有数字签名**，SmartScreen 对「无法识别的应用」一律先拦 | 点「更多信息」→「仍要运行」；或用同目录的 `双击安装_轻提词4.5.0.bat`（由 cmd 拉起，SmartScreen 不拦） |
+| 双击安装包弹「Windows 已保护你的电脑」 | 安装包**没有数字签名**（`Get-AuthenticodeSignature` = `NotSigned`）；用户那份是下载来的、带 Mark-of-the-Web，SmartScreen 对「来自 Internet + 未签名」的 exe 一律先拦 | 短期：用 `双击安装_轻提词.bat`（启动前会**清掉下载标记**再启动，详见 `_deploy\安装与分发_轻提词.md`），或点「更多信息」→「仍要运行」。长期：**优先上架微软商店（MSIX）—— 微软免费重签名，商店用户零弹窗**（个人开发者唯一免费且彻底的路）；官网直接下载渠道才需要 `scripts\sign.ps1` + OV 证书（$150~300/年，且注意 **EV 自 2024 年起也不再即时绕过**，与 OV 一样要积累信誉） |
+| 安装报「安装程序无法创建目录 `…\Temp\is-XXXX.tmp`。错误 5: 拒绝访问」 | 那次安装是被**低完整性 / 受限上下文**（沙箱、AI 代理、受限启动器）拉起来的：`%TEMP%` 是 Medium 完整性标签，Windows 不允许低完整性进程往里写。**机器权限没坏** —— 普通（Medium）进程实测建目录/写文件全成功 | 在资源管理器里双击 `双击安装_轻提词.bat` 安装（它自带一个实测可写的私有临时目录，不再依赖 `%TEMP%`）；**不要**从 AI 代理 / 沙箱窗口里启动安装包 |
 | 安装包能生成、大小也对，但装不上去 | 4.1.8 实测：NSIS 路线打出来的包**偶发不可用**（静默安装什么都不装、退出码仍是 0；手动双击报「无法打开要写入的文件」） | 换 Inno 路线重打（`ISCC.exe src-tauri\inno\setup.iss`），并用 `node scripts/verify-installer.mjs` 真机验一次再发 |
 | `.\build.ps1` 报 `Join-Path ... NullNotAllowed` | `build.ps1` 曾是 UTF-8 无 BOM，Windows PowerShell 5.1 按 GBK 读 → 中文注释吃掉换行、脚本被解析坏 | 已修（加了 BOM）；若你改了该文件，记得存成 **UTF-8 with BOM** |
 
@@ -233,8 +234,13 @@ npm run build:checked
 #    4.1.8 起服务端加了自助改密；4.5.0 起两边同号发布（客户端 6 处与服务端 VERSION 一起改）。
 #    preflight 只要求它「不落后于客户端」，不要求相等。
 #
-# ℹ️ 4.5.0 实况（两条路线，发布走 Inno）：
-#    实际发布的 `轻提词安装包_v4.5.0.exe` 是 **Inno Setup** 编译出来的（`ISCC.exe src-tauri\inno\setup.iss`）；
+# ℹ️ 4.6.0 实况（数据目录 + 文件管理台，发布仍走 Inno）：
+#    ① 笔记默认落在 **安装目录\data**（安装版 = D:\轻提词\data），设置 → 存储 里可自选位置、
+#       一键打开、一键搬移、恢复默认；旧版 %APPDATA%\DesktopNotesDev 下的笔记首次启动自动复制过来。
+#    ② 安装包支持选择安装位置（默认 D:\轻提词，`DisableDirPage=no`），卸载时 data 目录保留
+#       （setup.iss 的 `[Dirs] ... uninsneveruninstall`），不会把用户笔记删掉。
+#    ③ 新增「文件管理台」（Ctrl+K 或抽屉里的「管理」）：搜索 / 分类 / 批量置顶改色删除导出。
+#    实际发布的 `轻提词安装包_v4.6.0.exe` 由 **Inno Setup** 编译（`ISCC.exe src-tauri\inno\setup.iss`）；
 #    另一条 `npm run tauri build` 的 NSIS 路线（tauri.conf.json 的 bundle.targets=["nsis"]）
 #    产出 `轻提词_4.5.0_x64-setup.exe`（约 1.7 MB）—— 4.1.8 实测这条路线**不可靠**
 #    （同一份文件先能装、后来静默安装什么都不装），所以发布不用它。
@@ -325,11 +331,19 @@ npm run build:checked
 - 详细契约、数据文件与上线步骤见 `server_ai/README_部署.md` 与
   `_deploy/方案_4.1.1_自建账号系统与后台接管.md`
 
-## 数据存储（与 C++ 版兼容）
+## 数据存储（与 C++ 版兼容 · 4.6.0 起位置可自选）
 
-- 开发版默认：`%APPDATA%\DesktopNotesDev\DesktopNotes\notes.json` + `refblocks.json`
-- 环境变量切换：`MICROPROMPT_PROFILE=dev|test|stable`，或 `MICROPROMPT_DATA_DIR=<绝对路径>`
-- 字段语义与 C++ 版 `NoteManager::Note` 完全一致（含 `color` 字段）
+- **默认位置（4.6.0 起）**：`<安装目录>\data\notes.json` + `refblocks.json`
+  —— 安装版即 `D:\轻提词\data\`；免安装版即 exe 旁边的 `data\`（exe 目录不可写时自动退回 `%APPDATA%`）
+- **位置解析优先级**：`MICROPROMPT_DATA_DIR` > 用户在「设置 → 存储」里自选的位置（存
+  `%APPDATA%\<profile>\config.json` 的 `dataDir`）> `<安装目录>\data` > `%APPDATA%\DesktopNotesDev\DesktopNotes`
+- **旧数据自动迁移**：新默认目录里还没有 `notes.json`、而旧位置（`%APPDATA%\DesktopNotesDev\DesktopNotes`）有
+  → 首次启动复制一份过去（只复制不删除，旧文件留作备份）
+- **环境变量切换**：`MICROPROMPT_PROFILE=dev|test|stable`，或 `MICROPROMPT_DATA_DIR=<绝对路径>`
+- **换位置 = 三步走**（`switch_data_dir` 命令）：先 flush 内存改动 → 复制到新目录并读回校验
+  （必须是合法笔记 JSON）→ 才写配置；选择覆盖时目标目录里的旧 `notes.json` 会先备份成 `notes.json.<时间戳>.bak`
+- 字段语义与 C++ 版 `NoteManager::Note` 一致，4.6.0 多一个 `pinned`（旧版/ C++ 版读到会忽略，
+  缺失时按 `false` 处理，双向兼容）
 - 保存链路对齐 C++ 版：输入防抖 500ms / 兜底 2s / 切换笔记与新建/删除前强制 flush；
   原子写入 = 写 `.tmp` → 读回校验 → 备份 `.bak` → rename 替换（失败重试 2 次，仍失败回退直接覆盖写并保留 `.bak`）
 
@@ -379,9 +393,23 @@ npm run build:checked
   （原密码 / 新密码 / 确认 + 显示密码 + 本地校验 + 成功失败提示）；
   开关与三档开关去掉写死的拟物阴影（`#ffffff` 高光 + `#d1d9e6`），改成跟随主题的
   平轨道 + 滑块下投影（边缘跳变 41 → 22，实测见 `比赛提交材料/02_演进记录`）
+- [x] **Phase 7（4.6.0）数据归位 + 文件管理台**：用户提三件事 —— ①「设置里能自选文件存哪、一键打开、
+  一键搬到别的位置」；②「安装包要能选装在哪，默认 `D:\轻提词`，笔记默认也放软件根目录下的文件夹」；
+  ③「保留抽屉那套展开样式，但要一个效率更高的文件管理架构」。对应落地：
+  - **数据位置**：`resolve_data_dir()` 四级优先（环境变量 → 用户配置 `config.json` → `<安装目录>\data` →
+    `%APPDATA%` 兜底）；旧数据**复制式**自动迁移；换位置走 `flush → 复制 → 读回校验 → 才写配置`
+    （目标已有 `notes.json` 先备份），`open_folder` 用 explorer `/select,` 选中笔记文件；
+  - **设置 → 存储**：路径 / 条数 / 占用 / 文件清单 + 打开文件夹 / 更改位置 / 恢复默认 / 文件管理；
+  - **文件管理台（Ctrl + K）**：近全屏三栏（分类 / 列表 / 详情）+ 批量置顶改色导出删除 + 搜索排序 +
+    键盘导航；原来的笔记抽屉**一行没改**，只加了个「管理」入口；
+  - **安装包**：`DefaultDirName=D:\轻提词` + `DisableDirPage=no`（可改位置），安装时建 `{app}\data`，
+    `uninsneveruninstall` 保证**卸载不删笔记**；
+  - 新增 Rust 命令 11 个（存储信息 / 开关目录 / 列目录与盘符 / 快捷位置 / 新建文件夹 / 搬移 / 导出等），
+    自绘文件夹选择器（不依赖没打进依赖的 `tauri-plugin-dialog`）；
+  - 真机验证：装到 `D:\轻提词` → 界面与数据位置正确 → 搬移 / 恢复默认 / 导出全通 → 卸载后 `data\` 保留
 - [ ] Phase 5（P3）**剩余部分**：CI 自动构建、增量更新、代码签名 —— **均未做**，目前发版全靠手工
 
-## 已知限制（客户端 v4.5.0 / 服务端 v4.5.0 · 2026-10-15 核对）
+## 已知限制（客户端 v4.6.0 / 服务端 v4.6.0 · 2026-10-17 核对）
 
 **界面 / 交互**
 
@@ -404,7 +432,14 @@ npm run build:checked
 - **「订单被打回」的客户端提示已在 4.1.8 客户端里**：作废订单会明确提示并给「重新选套餐」按钮
   （`src/components/MemberDialog.tsx`）；仍在用 4.1.1 的用户遇到作废订单会停在「等待确认开通」页
   （不会再误扣费，重开「开通会员」弹窗即可重新下单）
-- 旧版数据自动迁移（`%APPDATA%/DesktopNotesDev` → 新路径）尚未实现：本版直接读写旧路径，天然兼容
+- ~~旧版数据自动迁移（`%APPDATA%/DesktopNotesDev` → 新路径）尚未实现~~ → **4.6.0 已实现**：
+  默认目录里还没有 `notes.json` 而旧位置有，就**复制**一份过去（只复制不删除，旧文件留作备份）
+- **4.6.0 的文件管理台是「附加能力」**：原来的笔记抽屉（向上展开的气泡卡片）一行没改；
+  管理台目前只做「管理」，不做云同步 / 多标签 / 回收站（删除仍是真删，带二次确认）
+- **换保存位置是「复制 + 校验」而不是「移动」**：为了保证不丢数据，搬到新位置后旧目录里的文件会留下
+  （可以自己删）；目标目录里已有 `notes.json` 时会先备份成 `notes.json.<时间戳>.bak`
+- **文件夹选择器是自绘的**（没用 Tauri 官方 dialog 插件，离线构建环境拉不到那个 crate）：
+  只支持选目录、进子目录、新建文件夹，没有系统弹窗的「最近位置 / 网络位置 / 新建到剪贴板」等能力
 - **后台只有亮色和客户端一致**：后台的暗色模式是它独有的（客户端目前只有亮色），
   以后客户端要加暗色，两边的颜色令牌得对齐一次（4.1.4）
 
