@@ -5,6 +5,7 @@ import { formatMemberUntil, memberDaysLeft, AI_PLANS, FREE_DAILY_QUOTA } from ".
 import { fileToAvatarDataUrl, MAX_AVATAR_BYTES } from "../utils";
 import defaultAvatar from "../assets/icons/default-avatar.svg";
 import ChangePasswordDialog from "./ChangePasswordDialog";
+import StorageControls from "./StoragePanel";
 
 const UI_MARKS = ["小", "中", "大"];
 /** 单个面板设计宽度（缩放基准） */
@@ -134,6 +135,11 @@ const ICONS: Record<string, React.ReactNode> = {
       <circle cx="12" cy="7.6" r="0.7" fill="currentColor" stroke="none" />
     </svg>
   ),
+  storage: (
+    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinejoin="round">
+      <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.2h7A1.5 1.5 0 0 1 19 9.7v7.8a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 17.5z" />
+    </svg>
+  ),
 };
 
 type ViewKey =
@@ -142,6 +148,7 @@ type ViewKey =
   | "display"
   | "ai"
   | "page"
+  | "storage"
   | "about";
 
 const MENU: { key: ViewKey; name: string; desc: string }[] = [
@@ -149,6 +156,7 @@ const MENU: { key: ViewKey; name: string; desc: string }[] = [
   { key: "display", name: "显示", desc: "护眼模式、字数统计、笔记时间" },
   { key: "ai", name: "AI 助手", desc: "会员额度、自动润色、代码块识别" },
   { key: "page", name: "页面设置", desc: "主题配色、页面大小" },
+  { key: "storage", name: "存储", desc: "笔记保存位置、备份与文件管理" },
   { key: "about", name: "关于", desc: "版本与反馈信息" },
 ];
 
@@ -194,6 +202,7 @@ export default function SettingsDialog({
   const authUser = useStore((s) => s.authUser);
   const setAuth = useStore((s) => s.setAuth);
   const clearAuth = useStore((s) => s.clearAuth);
+  const openNotesManager = useStore((s) => s.openNotesManager);
 
   const username = authUser?.username ?? "用户";
 
@@ -862,7 +871,7 @@ export default function SettingsDialog({
 
   const viewAbout = (
     <div className="set-section set-about">
-      <div className="set-hint">轻提词 测试 4.5.0 · 本地桌面速记 · AI 额度与会员制</div>
+      <div className="set-hint">轻提词 测试 4.6.0 · 本地桌面速记 · AI 额度与会员制</div>
       <div className="set-hint">
         AI 免费版每天 {aiQuota?.freeQuota ?? 3} 次 · 日卡 ¥2（24 小时）/ 月卡 ¥8（30 天）
       </div>
@@ -870,11 +879,26 @@ export default function SettingsDialog({
     </div>
   );
 
+  /**
+   * 存储页（4.6.0）：笔记保存位置 + 文件管理台入口。
+   * 逻辑全部在 StorageControls 里（文件管理台底部复用同一份）。
+   */
+  const viewStorage = (
+    <StorageControls
+      variant="card"
+      onOpenManager={() => {
+        requestClose();
+        openNotesManager();
+      }}
+    />
+  );
+
   const SUB_CONTENT: Record<string, React.ReactNode> = {
     user: accountFields,
     display: viewDisplay,
     ai: viewAi,
     page: viewPage,
+    storage: viewStorage,
     about: viewAbout,
   };
 

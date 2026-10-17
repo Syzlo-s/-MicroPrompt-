@@ -36,6 +36,7 @@ export default function BottomDock() {
   const settingsAccountOnly = useStore((s) => s.settingsAccountOnly);
   const openSettings = useStore((s) => s.openSettings);
   const closeSettings = useStore((s) => s.closeSettings);
+  const openNotesManager = useStore((s) => s.openNotesManager);
   const memberOpen = useStore((s) => s.memberOpen);
   const closeMember = useStore((s) => s.closeMember);
 
@@ -118,13 +119,36 @@ export default function BottomDock() {
       {/* ===== 笔记抽屉浮层（从底部依次弹出） ===== */}
       {drawer !== "closed" && (
         <div className={"note-drawer " + drawer}>
-          <button
-            className="drawer-new"
-            onClick={() => void createNote()}
-          >
-            <Icon src={chuangjianSvg} size={16} />
-            <span>新建笔记</span>
-          </button>
+          <div className="drawer-head">
+            <button
+              className="drawer-new"
+              onClick={() => void createNote()}
+            >
+              <Icon src={chuangjianSvg} size={16} />
+              <span>新建笔记</span>
+            </button>
+            <button
+              className="drawer-manage"
+              title="文件管理台：搜索、批量整理、导出（Ctrl+K）"
+              onClick={() => {
+                closeDrawer();
+                openNotesManager();
+              }}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.9"
+                strokeLinejoin="round"
+              >
+                <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.2h7A1.5 1.5 0 0 1 19 9.7v7.8a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 17.5z" />
+              </svg>
+              <span>管理</span>
+            </button>
+          </div>
           <div className="note-drawer-scroll">
             <div className="list-cards">
               {notes.map((n, i) => (

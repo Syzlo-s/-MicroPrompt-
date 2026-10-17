@@ -263,6 +263,12 @@ interface StoreState {
   settingsAccountOnly: boolean;
   /** 笔记数据目录路径（首次欢迎页展示） */
   dataDir: string;
+  /** 存储位置详情（4.6.0：设置页「存储」+ 文件管理台底部） */
+  storage: backend.StorageInfo | null;
+  /** 存储操作进行中（切换位置 / 搬移数据） */
+  storageBusy: boolean;
+  /** 文件管理台（4.6.0）是否打开 */
+  notesManagerOpen: boolean;
   /** 是否已看过首次欢迎页 */
   welcomeDone: boolean;
   notes: Note[];
@@ -347,6 +353,30 @@ interface StoreState {
   setDataDir: (v: string) => void;
   finishWelcome: () => void;
   flushSave: () => Promise<void>;
+  /** 打开 / 关闭文件管理台 */
+  openNotesManager: () => void;
+  closeNotesManager: () => void;
+  /** 重新读取存储信息（打开设置 / 切换位置后调用） */
+  refreshStorage: () => Promise<void>;
+  /** 切换笔记保存位置：moveData = 把现有笔记一起搬过去 */
+  changeDataDir: (
+    target: string,
+    moveData: boolean,
+  ) => Promise<backend.SwitchReport>;
+  /** 恢复默认保存位置（安装目录\data） */
+  restoreDefaultDataDir: (
+    moveData: boolean,
+  ) => Promise<backend.SwitchReport>;
+  /** 从磁盘重新加载笔记（切换目录后） */
+  reloadData: () => Promise<void>;
+  /** 单条置顶 / 取消置顶 */
+  setNotePinned: (id: string, v: boolean) => void;
+  /** 批量置顶 */
+  setNotesPinned: (ids: string[], v: boolean) => void;
+  /** 批量改颜色 */
+  setNotesColor: (ids: string[], color: number) => void;
+  /** 批量删除 */
+  removeNotes: (ids: string[]) => Promise<void>;
 }
 
 async function doSave(get: () => StoreState, set: (p: Partial<StoreState>) => void) {
@@ -429,6 +459,9 @@ export const useStore = create<StoreState>((set, get) => {
     settingsOpen: false,
     settingsAccountOnly: false,
     dataDir: "",
+    storage: null,
+    storageBusy: false,
+    notesManagerOpen: false,
     welcomeDone: loadWelcomeDone(),
     notes: [],
     refblocks: {},
@@ -469,6 +502,8 @@ export const useStore = create<StoreState>((set, get) => {
       } catch {
         /* ignore */
       }
+
+      void get().refreshStorage();
 
       // 有笔记则选中最近修改的一条（与 C++ 版启动行为一致）
       const notes = [...data.notes];
@@ -818,6 +853,113 @@ export const useStore = create<StoreState>((set, get) => {
       const s = get();
       if (s.rev === 0 && pendingPayload === null) return;
       await doSave(get, set);
+    },
+
+    /* ---------------- 文件管理台 / 存储位置（4.6.0） ---------------- */
+
+    openNotesManager: () => set({ notesManagerOpen: true }),
+    closeNotesManager: () => set({ notesManagerOpen: false }),
+
+    refreshStorage: async () => {
+      try {
+        const info = await backend.getStorageInfo();
+        set({ storage: info, dataDir: info.dir });
+      } catch (e) {
+        console.error("[storage] 读取存储信息失败:", e);
+      }
+    },
+
+    changeDataDir: async (target: string, moveData: boolean) => {
+      // 先把内存里的改动落盘，再搬移，避免丢掉最后几个字
+      await get().flushSave();
+      set({ storageBusy: true });
+      try {
+        const report = await backend.switchDataDir(target, moveData);
+        await get().reloadData();
+        await get().refreshStorage();
+        return report;
+      } finally {
+        set({ storageBusy: false });
+      }
+    },
+
+    restoreDefaultDataDir: async (moveData: boolean) => {
+      await get().flushSave();
+      set({ storageBusy: true });
+      try {
+        const report = await backend.resetDataDir(moveData);
+        await get().reloadData();
+        await get().refreshStorage();
+        return report;
+      } finally {
+        set({ storageBusy: false });
+      }
+    },
+
+    reloadData: async () => {
+      try {
+        const data = await backend.loadData();
+        set((s) => ({
+          notes: data.notes,
+          refblocks: data.refblocks,
+          currentId:
+            s.currentId && data.notes.some((n) => n.id === s.currentId)
+              ? s.currentId
+              : (data.notes[0]?.id ?? null),
+        }));
+      } catch (e) {
+        console.error("[load] 重新加载失败:", e);
+      }
+    },
+
+    setNotePinned: (id: string, v: boolean) => {
+      const note = get().notes.find((n) => n.id === id);
+      if (!note || Boolean(note.pinned) === v) return;
+      patchNote(id, { pinned: v, modified: nowLocal() });
+      set((s) => ({ rev: s.rev + 1 }));
+      scheduleSave();
+    },
+
+    setNotesPinned: (ids: string[], v: boolean) => {
+      if (ids.length === 0) return;
+      const set0 = new Set(ids);
+      const now = nowLocal();
+      set((s) => ({
+        notes: s.notes.map((n) =>
+          set0.has(n.id) && Boolean(n.pinned) !== v
+            ? { ...n, pinned: v, modified: now }
+            : n,
+        ),
+        rev: s.rev + 1,
+      }));
+      scheduleSave();
+    },
+
+    setNotesColor: (ids: string[], color: number) => {
+      if (ids.length === 0) return;
+      const set0 = new Set(ids);
+      const now = nowLocal();
+      set((s) => ({
+        notes: s.notes.map((n) =>
+          set0.has(n.id) && n.color !== color
+            ? { ...n, color, modified: now }
+            : n,
+        ),
+        rev: s.rev + 1,
+      }));
+      scheduleSave();
+    },
+
+    removeNotes: async (ids: string[]) => {
+      if (ids.length === 0) return;
+      await get().flushSave();
+      const set0 = new Set(ids);
+      set((s) => ({
+        notes: s.notes.filter((n) => !set0.has(n.id)),
+        currentId:
+          s.currentId && set0.has(s.currentId) ? null : s.currentId,
+      }));
+      scheduleSave();
     },
   };
 });

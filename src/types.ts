@@ -11,6 +11,8 @@ export interface Note {
   /** ISO8601 本地时间 "yyyy-MM-ddTHH:mm:ss" */
   created: string;
   modified: string;
+  /** 4.6.0：文件管理台里的「置顶」。旧数据缺失 = false；写盘后 C++ 版/旧版读取会忽略该字段 */
+  pinned?: boolean;
 }
 
 export interface AppData {

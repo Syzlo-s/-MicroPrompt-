@@ -6,6 +6,7 @@ import BottomDock from "./components/BottomDock";
 import LoginScreen from "./components/LoginScreen";
 import WelcomeScreen from "./components/WelcomeScreen";
 import ToastHost from "./components/ToastHost";
+import FileManager from "./components/FileManager";
 
 /** UI 缩放：小 / 中 / 大 */
 const UI_ZOOMS = [1, 1.15, 1.3];
@@ -23,6 +24,9 @@ export default function App() {
   const welcomeDone = useStore((s) => s.welcomeDone);
   const eyeCare = useStore((s) => s.eyeCareMode);
   const themeColor = useStore((s) => s.themeColor);
+  const notesManagerOpen = useStore((s) => s.notesManagerOpen);
+  const openNotesManager = useStore((s) => s.openNotesManager);
+  const closeNotesManager = useStore((s) => s.closeNotesManager);
   const bg = eyeCare ? "#FFF8E7" : "#FFFFFF";
 
   const rootRef = useRef<HTMLDivElement>(null);
@@ -68,6 +72,18 @@ export default function App() {
     return () => document.removeEventListener("contextmenu", prevent);
   }, []);
 
+  // 全局快捷键：Ctrl/Cmd + K 打开文件管理台（已登录时才有意义）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "k") return;
+      if (!useStore.getState().authToken) return;
+      e.preventDefault();
+      openNotesManager();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [openNotesManager]);
+
   if (!authReady) {
     return <div className="auth-loading">加载中…</div>;
   }
@@ -96,6 +112,8 @@ export default function App() {
         <BottomDock />
       </div>
       {!welcomeDone && <WelcomeScreen />}
+      {/* 文件管理台（4.6.0）：Ctrl+K 或右下角抽屉里的「管理」入口打开 */}
+      {notesManagerOpen && <FileManager onClose={closeNotesManager} />}
       <ToastHost />
     </div>
   );

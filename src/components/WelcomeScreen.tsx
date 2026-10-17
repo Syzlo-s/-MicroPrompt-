@@ -28,7 +28,7 @@ export default function WelcomeScreen() {
           <div className="welcome-brand">
             <div>欢迎使用 [ 轻提词 ]（MicroPrompt）</div>
             <div>曾用名： [ 桌面速记 ]（DesktopNotes）</div>
-            <div>当前版本：测试 4.5.0</div>
+            <div>当前版本：测试 4.6.0</div>
           </div>
 
           <h2 className="welcome-h2">如何使用：</h2>
@@ -41,7 +41,13 @@ export default function WelcomeScreen() {
             <li>右上角图钉按钮可将窗口置顶到最上层</li>
             <li>所有内容都会自动保存，关闭窗口时无需手动保存</li>
             <li>
-              笔记文件默认地址：C:\Users\&lt;用户名&gt;\AppData\Roaming\DesktopNotesDev\DesktopNotes\notes.json
+              笔记文件默认位置：<b>软件安装目录下的 data 文件夹</b>（例如
+              D:\轻提词\data\notes.json）；在「设置 → 存储」里可以一键打开、
+              换到别的盘，或者把现有笔记整体搬过去
+            </li>
+            <li>
+              <b>文件管理台（Ctrl + K）</b>：搜索标题与正文、按时间 / 颜色筛选、
+              批量置顶 / 改色 / 删除 / 导出，比一条条点卡片快得多
             </li>
           </ul>
 
