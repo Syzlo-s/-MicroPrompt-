@@ -4,10 +4,10 @@
 //   2. AI 额度卡片在「免费不限量」与「免费版」两种状态下的呈现是否正确
 //      （第 2 项用 CDP 拦截 /ai/quota 伪造响应，不依赖服务端真的开通）
 //
-// 用法（先在项目根目录起一个带调试端口的开发版）：
+// 用法（先起一个带调试端口的便携版）：
 //     PowerShell:
 //       $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222"
-//       .\开发版\轻提词.exe          # 或 npm run tauri dev
+//       ..\便携版\轻提词.exe          # 或 npm run tauri dev
 //     node scripts/ui-smoke.mjs     # 全部通过退出码 0
 //
 //   换端口：$env:MP_CDP_PORT="9333"；脚本会临时改写登录态并在结束时还原。
@@ -60,9 +60,9 @@ let targets;
 try {
   targets = await (await fetch(CDP_URL)).json();
 } catch (e) {
-  console.error(`连不上 CDP（${CDP_URL}）。请先带调试端口启动开发版：`);
+  console.error(`连不上 CDP（${CDP_URL}）。请先带调试端口启动便携版：`);
   console.error('  $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=' + PORT + '"');
-  console.error('  .\\开发版\\轻提词.exe');
+  console.error('  ..\\便携版\\轻提词.exe');
   process.exit(2);
 }
 const page = targets.find((t) => t.type === 'page' && t.webSocketDebuggerUrl);
