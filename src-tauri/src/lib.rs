@@ -715,32 +715,19 @@ fn set_pinned(app: AppHandle, pinned: bool) -> bool {
     pinned
 }
 
-/// WebView2 用户数据目录标识：按可执行文件路径生成稳定的短哈希。
-/// 开发版 / 稳定版 / 测试版即使由同一份源码构建、共用同一 identifier，
-/// 也会各自使用独立的 WebView2 user data folder，从而可以同时打开；
-/// 否则第二个实例会因共用同一目录报 ERROR_INVALID_STATE 而无法启动。
-fn webview_profile_key() -> String {
-    let exe = std::env::current_exe().unwrap_or_default();
-    let s = exe.to_string_lossy().to_lowercase();
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a 64bit offset basis
-    for b in s.bytes() {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{hash:016x}")
-}
+// WebView2 用户数据目录：**所有副本共用一个**，由 tauri.conf.json 的 identifier 决定 ——
+//   %LOCALAPPDATA%\com.microprompt.v4\EBWebView
+// 这里曾经想按 exe 路径生成 `webview-<hash>` 目录做隔离（好让便携版与安装版同时打开），
+// 但实测**不生效**：2026-10-17 全盘搜索 `%LOCALAPPDATA%` 下从未出现过 `webview-*` 目录，
+// 而注入 localStorage 的登录态在 便携版 / release / 安装版 之间是共享的（都落在那一个目录里）。
+// 于是删掉那段死代码，改为把事实写进 README 与设计规范：
+//   · 登录态、界面偏好是各副本共享的；
+//   · 不要同时开两个副本（共用同一用户数据目录，第二个会报 ERROR_INVALID_STATE 起不来）。
+// 以后真要做隔离，先查清 Tauri 2 运行期改 WindowConfig::data_directory 为什么被忽略。
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut context = tauri::generate_context!();
-    // 为每个构建产物指定独立且绝对的 WebView2 数据目录，避免不同版本互相影响
-    let local = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| String::from("."));
-    let webview_dir = PathBuf::from(local).join(format!("webview-{}", webview_profile_key()));
-    for w in context.config_mut().app.windows.iter_mut() {
-        if w.data_directory.is_none() {
-            w.data_directory = Some(webview_dir.clone());
-        }
-    }
+    let context = tauri::generate_context!();
 
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
