@@ -117,13 +117,27 @@ const must = [
   ["server_ai/sync_admin_page.py", "后台界面注入脚本"],
 ];
 for (const [p, d] of must) (has(p) ? ok(p) : bad("缺少 " + p + "（" + d + "）"));
-// setup.iss 必须是 UTF-8 with BOM，否则中文应用名/输出文件名会乱码
-try {
-  const buf = readFileSync(resolve(ROOT, "src-tauri/inno/setup.iss"));
-  if (buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) ok("setup.iss 是 UTF-8 with BOM");
-  else bad("setup.iss 丢了 BOM —— 中文（应用名/输出文件名）会变乱码");
-} catch {
-  /* 上面已报缺失 */
+// 含中文的构建脚本必须是 UTF-8 with BOM：
+//   没有 BOM 时 Windows PowerShell 5.1 按 GBK(936) 读，中文注释会“吃掉”换行，
+//   脚本直接被解析坏（build.ps1 踩过一次；sign.ps1 被编辑器吃掉过一次 BOM）。
+//   任何工具改完这些文件都要回来跑一遍本检查。
+const bomFiles = [
+  ["src-tauri/inno/setup.iss", "中文应用名/输出文件名会变乱码"],
+  ["build.ps1", "PowerShell 5.1 会按 GBK 读 → 中文吃掉换行、脚本解析失败"],
+  ["scripts/sign.ps1", "同上"],
+];
+for (const [p, why] of bomFiles) {
+  if (!has(p)) continue; // 文件缺失已在上面的 must 列表里报过
+  try {
+    const buf = readFileSync(resolve(ROOT, p));
+    const bom = buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf;
+    const nonAscii = /[^\x00-\x7F]/.test(buf.toString("utf8"));
+    if (bom) ok(p + " 是 UTF-8 with BOM");
+    else if (!nonAscii) ok(p + " 全 ASCII（无需 BOM）");
+    else bad(p + " 丢了 BOM —— " + why);
+  } catch {
+    /* 上面已报缺失 */
+  }
 }
 
 /* ---------- 4. 线上 AI 服务是否已经是新版 ---------- */
