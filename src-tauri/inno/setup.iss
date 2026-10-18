@@ -1,8 +1,11 @@
 ﻿; 轻提词 Inno Setup 安装脚本
+; 4.7.0：软件内在线升级（设置 → 关于 / 启动静默检查）—— 升级时就是把本安装包
+;        用 /VERYSILENT /DIR=<当前安装目录> 静默装一遍，所以本脚本的 [Files] 与
+;        [Dirs] 保持"覆盖不改 data"的语义就够用。
 ; 4.6.0：安装位置可选（默认 D:\轻提词），并在安装目录下建好 data 文件夹
 ;        —— 笔记默认就存在「安装目录\data」，卸载时该文件夹不会被删除
 #define MyAppName "轻提词"
-#define MyAppVersion "4.6.0"
+#define MyAppVersion "4.7.0"
 #define MyAppPublisher "MicroPrompt"
 #define MyAppExeName "轻提词.exe"
 #define MyAppDataDir "data"
@@ -28,7 +31,7 @@ WizardImageFile={#SrcRoot}\nsis\sidebarImage.bmp
 WizardSmallImageFile={#SrcRoot}\inno\small.png
 SetupIconFile={#SrcRoot}\icons\icon.ico
 OutputDir=D:\Desktop\桌面速记\轻提词V4.0\release\installer
-OutputBaseFilename=轻提词安装包_v4.6.0
+OutputBaseFilename=轻提词安装包_v4.7.0
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog

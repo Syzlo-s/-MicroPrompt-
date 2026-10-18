@@ -892,7 +892,7 @@ export default function SettingsDialog({
       case "checking":
         return "正在向更新服务器查询…";
       case "latest":
-        return `已是最新版本（${updVersion ?? "4.6.0"}）`;
+        return `已是最新版本（${updVersion ?? "4.7.0"}）`;
       case "available":
         return `发现新版本 ${updManifest?.version ?? ""}${
           updManifest?.releasedAt ? `（${updManifest.releasedAt}）` : ""
@@ -910,13 +910,13 @@ export default function SettingsDialog({
       case "error":
         return `失败：${updError}`;
       default:
-        return `当前版本 ${updVersion ?? "4.6.0"} · 更新源：${UPDATE_BASE}`;
+        return `当前版本 ${updVersion ?? "4.7.0"} · 更新源：${UPDATE_BASE}`;
     }
   })();
 
   const viewAbout = (
     <div className="set-section set-about">
-      <div className="set-hint">轻提词 测试 4.6.0 · 本地桌面速记 · AI 额度与会员制</div>
+      <div className="set-hint">轻提词 测试 4.7.0 · 本地桌面速记 · AI 额度与会员制</div>
       <div className="set-hint">
         AI 免费版每天 {aiQuota?.freeQuota ?? 3} 次 · 日卡 ¥2（24 小时）/ 月卡 ¥8（30 天）
       </div>
