@@ -187,6 +187,16 @@ MOCK = os.environ.get("MP_MOCK", "") == "1"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("MP_DATA_DIR", os.path.join(BASE_DIR, "data"))
 
+# 在线升级（4.7.0）：客户端的更新源就是本服务，形如
+#   GET /updates/latest.json        → 最新版本清单（版本 / 说明 / 下载项 / SHA-256）
+#   GET /updates/files/<文件名>      → 安装包或便携版 exe
+# 目录结构（由 scripts/make-update-manifest.mjs 生成，scp 上来即可）：
+#   updates/latest.json
+#   updates/files/轻提词安装包_v4.7.0.exe
+#   updates/files/轻提词_v4.7.0.exe
+UPDATES_DIR = os.environ.get("MP_UPDATES_DIR", os.path.join(BASE_DIR, "updates"))
+UPDATE_CHUNK = 256 * 1024
+
 # 会员套餐（与客户端 / 欢迎页价格一致：日卡 2 元 / 月卡 8 元）
 PLANS = {
     "day": {"key": "day", "name": "日卡", "desc": "24 小时不限量", "days": 1, "amount": 2.00},
@@ -3581,6 +3591,67 @@ class Handler(BaseHTTPRequestHandler):
     def _path(self):
         return urllib.parse.urlparse(self.path).path
 
+    def _file(self, path, content_type, download_name=None, head_only=False):
+        """发一个（可能很大的）静态文件：分块写，避免把 5MB exe 一次读进内存。
+
+        只用于 /updates —— 更新包本身不敏感（客户端还要按清单里的 SHA-256 校验），
+        所以不校验登录态；路径穿越在调用处已被拦掉。
+        """
+        if not os.path.isfile(path):
+            self._err("更新文件不存在", "not_found", 404)
+            return
+        try:
+            size = os.path.getsize(path)
+        except OSError as e:
+            self._err("读取更新文件失败：%s" % e, "io", 500)
+            return
+        self.send_response(200)
+        self._cors()
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(size))
+        # 清单必须每次现取（否则发新版后客户端还看旧版本号）；文件本身可以短缓存
+        self.send_header("Cache-Control", "no-cache" if download_name is None else "public, max-age=300")
+        self.send_header("Accept-Ranges", "none")
+        if download_name:
+            self.send_header(
+                "Content-Disposition",
+                'attachment; filename="%s"' % download_name.encode("ascii", "ignore").decode("ascii") or "update.bin",
+            )
+        self.end_headers()
+        if head_only:
+            return
+        try:
+            with open(path, "rb") as f:
+                while True:
+                    chunk = f.read(UPDATE_CHUNK)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            # 客户端中途取消下载：正常现象，别刷日志
+            pass
+
+    def _updates_route(self, path, head_only=False):
+        """返回 True 表示已处理（/updates/*）"""
+        if path == "/updates" or path == "/updates/":
+            self._json({"ok": True, "usage": ["/updates/latest.json", "/updates/files/<name>"]})
+            return True
+        if path == "/updates/latest.json":
+            self._file(os.path.join(UPDATES_DIR, "latest.json"),
+                       "application/json; charset=utf-8", head_only=head_only)
+            return True
+        prefix = "/updates/files/"
+        if path.startswith(prefix):
+            name = urllib.parse.unquote(path[len(prefix):])
+            # 只允许纯文件名：挡掉 ../ 、子目录与隐藏文件
+            if (not name) or ("/" in name) or ("\\" in name) or name.startswith(".") or name != os.path.basename(name):
+                self._err("非法的更新文件名", "bad_name", 400)
+                return True
+            fp = os.path.join(UPDATES_DIR, "files", name)
+            self._file(fp, "application/octet-stream", download_name=name, head_only=head_only)
+            return True
+        return False
+
     def _need_user(self):
         """返回 (uid, name)；失败时已写好响应并返回 None。"""
         try:
@@ -3612,8 +3683,20 @@ class Handler(BaseHTTPRequestHandler):
         self._cors()
         self.end_headers()
 
+    def do_HEAD(self):
+        """只给 /updates 用：运维确认更新包在不在、多大（curl -I）"""
+        path = self._path()
+        if self._updates_route(path, head_only=True):
+            return
+        self.send_response(404)
+        self._cors()
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self):
         path = self._path()
+        if self._updates_route(path):
+            return
         if path in ("/admin", "/admin/"):
             self._html(ADMIN_PAGE)
             return
@@ -4446,6 +4529,8 @@ def main():
     log("轻提词 AI 中转服务 %s 启动" % VERSION)
     log("  端口        :", PORT)
     log("  数据目录    :", DATA_DIR)
+    log("  在线升级    : /updates（%s）" % ("已就绪" if os.path.isfile(os.path.join(UPDATES_DIR, "latest.json"))
+        else "未放置 latest.json —— 把 updates/ 目录 scp 上来即可"))
     log("  备份        : 已备份 %d 个数据文件到 data/backup/（各保留最近 7 份）"
         % store.backup_data())
     log("  Casdoor     :", CASDOOR_URL)

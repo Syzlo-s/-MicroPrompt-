@@ -275,6 +275,13 @@ npm run build:checked
 #    **发版前两条都要同步版本串** —— preflight 会核对 setup.iss；打完包再跑
 #    `node scripts/verify-installer.mjs`（真机装一次、启动一次、卸载一次）才允许发出去。
 #    历史教训：4.1.0 / 4.1.1 两次发版都漏改了 setup.iss，它一度停在 4.0.3（2026-10-14 已修正）。
+#
+# ℹ️ 4.7.0 实况（软件内在线升级）：
+#    客户端启动静默查 <更新源>/updates/latest.json，设置 → 关于 里也能手动查；
+#    安装版走「下安装包 + 静默覆盖装」，便携版走「换 exe（旧文件留 .old-<版本>）」。
+#    发版时多一步： node scripts/make-update-manifest.mjs → 把 server_ai\updates\ scp 上服务器。
+#    下载与 SHA-256 校验都在前端做（crypto.subtle + fetch 进度），Rust 只负责落盘/应用/重启，
+#    所以**没有新增任何 Rust 依赖**。详见下面「在线升级（4.7.0）」一节。
 ```
 
 > **构建前务必跑 `npm run preflight`**：4.0.2 起登录凭据与 AI 地址都从 `.env` 注入
@@ -295,6 +302,57 @@ npm run build:checked
 > 产物会出现在 `D:\mp4target\release\bundle\nsis\`。
 > 另一条路是装 MSVC 工具链（VS Build Tools）后 `rustup default stable-x86_64-pc-windows-msvc`，
 > 它不用 dlltool，也就没有中文路径问题。
+
+## 在线升级（4.7.0）
+
+装着软件的人不用再手动下新包：**启动后静默查一次更新，设置 → 关于里也能手动查**。
+
+**怎么工作（一次更新的完整链路）**
+
+| 步骤 | 谁做 | 说明 |
+| --- | --- | --- |
+| ① 查清单 | 前端 `GET <更新源>/latest.json` | 拿版本号 / 更新说明 / 下载项 / SHA-256 |
+| ② 比版本 | `src/services/updater.ts` | 只有清单版本 > 当前版本才提示；相同就静默（不打扰） |
+| ③ 下载 | 前端 `fetch` + `ReadableStream` | 真实进度（百分比 + 已传/总量），不占内存峰值 |
+| ④ 校验 | `crypto.subtle` 算 SHA-256 | **不匹配就拒绝**，界面上直接给期望/实际两个哈希 |
+| ⑤ 落盘 | Rust `save_update_file` | 先写 `.part` 再改名，断电不会留下半个 exe |
+| ⑥ 应用 | Rust `apply_update` | 写更新脚本 → 确认脚本真的活起来 → 自己退出 |
+| ⑦ 替换 | 更新脚本（PowerShell，脱离本进程） | 安装版静默覆盖安装；便携版旧 exe 改名留底再写新的 |
+| ⑧ 重启 | 同一个脚本 | 启动新版；下次启动会提示「已更新到 x.y.z」 |
+
+- **安装版**（exe 旁边有 `unins000.exe`）→ 下**安装包**，静默 `/DIR=<当前安装目录>` 覆盖装，
+  快捷方式与卸载注册表项一起更新；**便携版** → 只下 exe，旧文件留成 `轻提词.exe.old-<旧版本>`。
+- 下载与校验全部在前端完成，所以 **Rust 侧没有引入任何新依赖**（不用 reqwest，离线也能编译）。
+- 更新缓存：`%LOCALAPPDATA%\轻提词\update\`，日志 `update.log`（客户端与脚本写同一个文件，
+  排障时一眼看出是「脚本没起来」还是「脚本里失败了」）。
+
+**怎么发一次更新**
+
+```powershell
+# 1) 版本号 6 处一起升（package.json / tauri.conf.json / Cargo.toml / setup.iss /
+#    SettingsDialog.tsx（关于页）/ WelcomeScreen.tsx），npm run preflight 会核对
+# 2) 出产物：npm run build:checked → cargo build --release --features tauri/custom-protocol
+#            → ISCC.exe src-tauri\inno\setup.iss
+# 3) 生成清单（算 size + SHA-256，并把两份产物复制进 server_ai\updates\files\）
+node scripts/make-update-manifest.mjs --notes-file release\notes-4.7.0.md
+# 4) 把 server_ai\updates\ 整个目录 scp 到服务器（ai_server.py 同级的 updates/）
+#    换位置也可以： MP_UPDATES_DIR=/srv/mp-updates python3 ai_server.py
+# 5) 不用登录就能自测：
+curl -s http://<服务器>:2581/updates/latest.json
+curl -sI "http://<服务器>:2581/updates/files/轻提词安装包_v4.7.0.exe"
+```
+
+**安全与边界（务必知道）**
+
+- 更新源是 **明文 HTTP + 裸 IP，产物未签名**：SHA-256 只能防「传输损坏 / 文件被换」，
+  **挡不住中间人**（攻击者可以同时改清单和文件）。要真防篡改得上 HTTPS + 代码签名。
+- 更新源必须允许跨域（`Access-Control-Allow-Origin`）——客户端页面跑在 `http://tauri.localhost`；
+  `ai_server.py` 的 `/updates` 已带 CORS，把更新包放同一台服务器最省事。
+- 客户端**只在清单版本 > 当前版本**时才提示；`/updates` 两条路由不校验登录态（更新包不敏感），
+  但文件名做了白名单（挡 `..`、子目录、隐藏文件），并支持 `curl -I` 探活。
+- 「忽略此版本」= 记住版本号不再提示（设置 → 关于里仍可手动更新）；「稍后」= 只是收起卡片，
+  下次启动还会提醒。启动自动检查可在 设置 → 关于 里关掉（`localStorage` 的
+  `microprompt.update.autoCheck`）。
 
 ## AI 额度与会员（4.1.0）
 

@@ -2,6 +2,7 @@ import React from "react";
 import { useStore, THEMES } from "../store";
 import { uploadAvatar, updateProfile } from "../services/auth";
 import { formatMemberUntil, memberDaysLeft, AI_PLANS, FREE_DAILY_QUOTA } from "../services/ai";
+import { useUpdateStore, formatBytes, UPDATE_BASE } from "../services/updater";
 import { fileToAvatarDataUrl, MAX_AVATAR_BYTES } from "../utils";
 import defaultAvatar from "../assets/icons/default-avatar.svg";
 import ChangePasswordDialog from "./ChangePasswordDialog";
@@ -203,6 +204,22 @@ export default function SettingsDialog({
   const setAuth = useStore((s) => s.setAuth);
   const clearAuth = useStore((s) => s.clearAuth);
   const openNotesManager = useStore((s) => s.openNotesManager);
+
+  // 在线升级（4.7.0）：与右上角提示卡共用同一个 store
+  const updPhase = useUpdateStore((s) => s.phase);
+  const updManifest = useUpdateStore((s) => s.manifest);
+  const updProgress = useUpdateStore((s) => s.progress);
+  const updError = useUpdateStore((s) => s.error);
+  const updVersion = useUpdateStore((s) => s.info?.version);
+  const updAuto = useUpdateStore((s) => s.autoCheck);
+  const updCheck = useUpdateStore((s) => s.check);
+  const updDownload = useUpdateStore((s) => s.download);
+  const updApply = useUpdateStore((s) => s.apply);
+  const updExpand = useUpdateStore((s) => s.expand);
+  const updSetAuto = useUpdateStore((s) => s.setAutoCheck);
+  React.useEffect(() => {
+    if (!updVersion) void useUpdateStore.getState().loadInfo();
+  }, [updVersion]);
 
   const username = authUser?.username ?? "用户";
 
@@ -869,12 +886,99 @@ export default function SettingsDialog({
     </>
   );
 
+  /** 关于页里那行"更新状态"文案 */
+  const updateStatusText = (() => {
+    switch (updPhase) {
+      case "checking":
+        return "正在向更新服务器查询…";
+      case "latest":
+        return `已是最新版本（${updVersion ?? "4.6.0"}）`;
+      case "available":
+        return `发现新版本 ${updManifest?.version ?? ""}${
+          updManifest?.releasedAt ? `（${updManifest.releasedAt}）` : ""
+        }`;
+      case "downloading": {
+        const p = updProgress.total
+          ? Math.round((updProgress.got / updProgress.total) * 100)
+          : 0;
+        return `正在下载 ${p}%（${formatBytes(updProgress.got)} / ${formatBytes(updProgress.total)}）`;
+      }
+      case "ready":
+        return "已下载并校验通过，点「重启并安装」即可（约 10 秒，笔记不会动）";
+      case "applying":
+        return "正在重启并安装…";
+      case "error":
+        return `失败：${updError}`;
+      default:
+        return `当前版本 ${updVersion ?? "4.6.0"} · 更新源：${UPDATE_BASE}`;
+    }
+  })();
+
   const viewAbout = (
     <div className="set-section set-about">
       <div className="set-hint">轻提词 测试 4.6.0 · 本地桌面速记 · AI 额度与会员制</div>
       <div className="set-hint">
         AI 免费版每天 {aiQuota?.freeQuota ?? 3} 次 · 日卡 ¥2（24 小时）/ 月卡 ¥8（30 天）
       </div>
+
+      {/* 在线升级（4.7.0）：检查 → 下载 → 校验 → 重启安装 */}
+      <div className="upd-set">
+        <div className="upd-set-row">
+          <span className="upd-set-label">软件更新</span>
+          <button
+            className="btn upd-btn"
+            disabled={updPhase === "checking" || updPhase === "downloading" || updPhase === "applying"}
+            onClick={() => void updCheck()}
+          >
+            {updPhase === "checking" ? "检查中…" : "检查更新"}
+          </button>
+        </div>
+        <div className="upd-set-status">{updateStatusText}</div>
+        {(updPhase === "downloading" || updPhase === "ready") && (
+          <div className="upd-bar upd-bar-set">
+            <div
+              className={"upd-bar-fill" + (updProgress.total ? "" : " indet")}
+              style={
+                updProgress.total
+                  ? { width: Math.min(100, Math.round((updProgress.got / updProgress.total) * 100)) + "%" }
+                  : undefined
+              }
+            />
+          </div>
+        )}
+        <div className="upd-set-actions">
+          {updPhase === "available" && (
+            <>
+              <button className="btn btn-primary upd-btn" onClick={() => void updDownload()}>
+                立即更新
+              </button>
+              <button className="upd-link" onClick={updExpand}>
+                看更新说明
+              </button>
+            </>
+          )}
+          {updPhase === "ready" && (
+            <>
+              <button className="btn btn-primary upd-btn" onClick={() => void updApply()}>
+                重启并安装
+              </button>
+              <button className="upd-link" onClick={updExpand}>
+                看更新说明
+              </button>
+            </>
+          )}
+          {updPhase === "error" && (
+            <button className="btn upd-btn" onClick={() => void updDownload()}>
+              重试下载
+            </button>
+          )}
+        </div>
+        <label className="upd-set-auto">
+          <input type="checkbox" checked={updAuto} onChange={(e) => updSetAuto(e.target.checked)} />
+          启动时自动检查更新
+        </label>
+      </div>
+
       <div className="set-hint">反馈邮箱：{SUPPORT_EMAIL}</div>
     </div>
   );

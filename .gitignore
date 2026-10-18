@@ -36,6 +36,10 @@ src-tauri/target/
 # 服务端运行时数据（用户、会员、用量、订单、admin_key.txt、收款码）
 server_ai/data/
 
+# 在线升级的分发包（安装包与 exe，几十 MB，只放服务器上）
+# latest.json 是文本又很小，故意留在版本库里，当"上次发了什么"的记录
+server_ai/updates/files/
+
 # Python
 __pycache__/
 *.pyc

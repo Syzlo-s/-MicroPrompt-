@@ -1,0 +1,15 @@
+{
+  "version": "4.6.0",
+  "releasedAt": "2026-10-18",
+  "notes": "轻提词 4.6.0",
+  "installer": {
+    "url": "files/轻提词安装包_v4.6.0.exe",
+    "size": 3530482,
+    "sha256": "cd5f19e47be1189e0f7c94b5e8cb89ffaaa8d3b993abb86f997ed8200b218602"
+  },
+  "exe": {
+    "url": "files/轻提词_v4.6.0.exe",
+    "size": 5656576,
+    "sha256": "0fcf6cb21fffb0389a6fe6a13c763c918cad56f3d154ab18a856e47889ef1e93"
+  }
+}

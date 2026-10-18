@@ -676,6 +676,373 @@ fn export_notes(dir: String, files: Vec<ExportFile>) -> Result<usize, String> {
     Ok(count)
 }
 
+// ============ 在线升级（4.7.0） ============
+//
+// 分工：**下载与校验都在前端**（WebView2 的 fetch 同时支持 http/https、能拿下载进度、
+// crypto.subtle 能算 SHA-256），Rust 只做「落盘 + 应用更新 + 重启」——
+// 这样**不需要引入 reqwest 等新 crate**（本项目一直是离线构建）。
+//   · 安装版（exe 旁边有 unins000.exe）→ 下安装包，静默覆盖安装（快捷方式/注册表一起更新）
+//   · 便携版 → 只下 exe：把正在运行的 exe 改名留底，再写新的（Windows 允许改名运行中的 exe）
+//
+// 更新脚本用 PowerShell 而不是 .cmd：安装目录 / 用户名都可能是中文，
+// cmd 会按 OEM(GBK) 读脚本而乱码，PowerShell（UTF-8 with BOM）没这个问题。
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateInfo {
+    /// 当前客户端版本（编译期写入，和 preflight 核对的 6 处版本号同源）
+    version: String,
+    exe_path: String,
+    app_dir: String,
+    /// 安装版 = 安装目录里有 Inno 的卸载器；便携版 = false
+    is_installed: bool,
+    /// 更新缓存目录（%LOCALAPPDATA%\轻提词\update）
+    update_dir: String,
+}
+
+/// 更新缓存目录：放在 %LOCALAPPDATA% 而不是安装目录 ——
+/// 便携版可能被放在只读介质/U 盘里，安装版也可能装在 Program Files。
+fn update_dir() -> PathBuf {
+    let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| String::from("."));
+    PathBuf::from(base).join("轻提词").join("update")
+}
+
+/// 本地 exe 路径（拿不到时给出空串，前端会提示"请手动下载"）
+fn current_exe_path() -> PathBuf {
+    std::env::current_exe().unwrap_or_default()
+}
+
+#[tauri::command]
+fn get_update_info() -> UpdateInfo {
+    let exe = current_exe_path();
+    let app_dir = exe.parent().map(|p| p.to_path_buf());
+    UpdateInfo {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        exe_path: exe.to_string_lossy().into_owned(),
+        app_dir: app_dir
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        is_installed: app_dir
+            .map(|d| d.join("unins000.exe").is_file())
+            .unwrap_or(false),
+        update_dir: update_dir().to_string_lossy().into_owned(),
+    }
+}
+
+/// 前端下载完的字节（base64）落到更新目录。
+/// 前端已按清单里的 SHA-256 校验过，这里只负责"先写 .part 再改名"，
+/// 避免断电/崩溃留下半个可执行文件被误启动。
+#[tauri::command]
+fn save_update_file(name: String, base64: String) -> Result<String, String> {
+    let name = name.trim().to_string();
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || name.starts_with('.')
+    {
+        return Err(format!("更新文件名不合法：{name}"));
+    }
+    let dir = update_dir();
+    fs::create_dir_all(&dir).map_err(|e| format!("无法创建更新目录：{e}"))?;
+    let data = b64_decode(&base64)?;
+    if data.is_empty() {
+        return Err("更新文件是空的".into());
+    }
+    let part = dir.join(format!("{name}.part"));
+    let dest = dir.join(&name);
+    fs::write(&part, &data).map_err(|e| format!("写入更新文件失败：{e}"))?;
+    if dest.exists() {
+        let _ = fs::remove_file(&dest);
+    }
+    fs::rename(&part, &dest).map_err(|e| format!("落盘更新文件失败：{e}"))?;
+    Ok(dest.to_string_lossy().into_owned())
+}
+
+/// 应用更新：写更新脚本 → 分离启动（无窗口）→ 1.2 秒后退出本进程。
+/// 脚本会等本进程真正退出（按 PID 等，最多 60 秒）再动文件，
+/// 所以「安装版静默覆盖」和「便携版替换 exe」都不会踩到"文件被占用"。
+#[tauri::command]
+fn apply_update(
+    app: AppHandle,
+    file_path: String,
+    kind: String,
+    version: String,
+) -> Result<(), String> {
+    let file = PathBuf::from(file_path.trim());
+    if !file.is_file() {
+        return Err(format!("更新文件不存在：{}", file.to_string_lossy()));
+    }
+    let exe = current_exe_path();
+    if !exe.is_file() {
+        return Err("拿不到当前程序路径，无法自动更新（请手动下载安装包）".into());
+    }
+    let app_dir = exe
+        .parent()
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| "拿不到程序所在目录".to_string())?;
+    let dir = update_dir();
+    fs::create_dir_all(&dir).map_err(|e| format!("无法创建更新目录：{e}"))?;
+
+    // 每次更新一个 run id：用来确认"这次"的脚本真的跑起来了（日志里可能有上次的残留）
+    let run = run_id();
+    let script = dir.join("apply-update.ps1");
+    let text = build_update_script(&kind, &file, &exe, &app_dir, &dir, &version, &run);
+    // PowerShell 读 UTF-8 脚本需要 BOM，否则中文路径会乱码
+    let mut bytes: Vec<u8> = vec![0xEF, 0xBB, 0xBF];
+    bytes.extend_from_slice(text.as_bytes());
+    fs::write(&script, bytes).map_err(|e| format!("写入更新脚本失败：{e}"))?;
+    append_update_log(
+        &dir,
+        &format!(
+            "client: apply_update run={} kind={} version={} file={} exe={}",
+            run,
+            kind,
+            version,
+            file.display(),
+            exe.display()
+        ),
+    );
+    spawn_update_script(&script, &dir, &run)?;
+
+    // 留一点时间让前端把「正在重启安装…」提示画出来，然后干净退出
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        app.exit(0);
+    });
+    Ok(())
+}
+
+/// PowerShell 单引号字符串（内部的 ' 翻倍转义），路径里带 `$`、空格、中文都安全
+fn ps_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// 毫秒时间戳当"这一次更新"的标识
+fn run_id() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis().to_string())
+        .unwrap_or_else(|_| String::from("0"))
+}
+
+/// 日志里出现 `run <id>` 说明脚本已经跑到第一行了
+fn log_has_run(dir: &Path, run: &str) -> bool {
+    fs::read_to_string(dir.join("update.log"))
+        .map(|s| s.contains(&format!("run {run}")))
+        .unwrap_or(false)
+}
+
+/// 启动更新脚本，并确认它真的活起来了。
+///
+/// 为什么这么麻烦（都是踩出来的）：
+///   1) 本程序是 windows 子系统的 GUI，标准句柄无效 —— 必须显式指到 null，
+///      否则 powershell 在启动阶段就死，脚本一行都不会跑。
+///   2) `CREATE_NO_WINDOW` 与 `DETACHED_PROCESS` 一起用，CreateProcess 会成功返回，
+///      但子进程立刻静默死掉（日志里只剩一行 spawned）——不能靠返回码判断。
+///   3) `CREATE_BREAKAWAY_FROM_JOB` 会被 WebView2 的 Job 直接拒绝（os error 5）。
+/// 所以：先试 `CREATE_NO_WINDOW`（不闪黑框），**等脚本写出起始日志**才算成功；
+/// 没等到就换不带任何 flag 的普通方式重来。都失败就报错、并且**不退出程序**，
+/// 免得用户落到"点了重启、程序关了、更新没发生"的最糟状态。
+fn spawn_update_script(script: &Path, dir: &Path, run: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    #[cfg(not(windows))]
+    const CREATE_NO_WINDOW: u32 = 0;
+
+    let mut last_err = String::from("未知原因");
+    for (label, flags) in [("CREATE_NO_WINDOW", CREATE_NO_WINDOW), ("plain", 0u32)] {
+        let mut cmd = std::process::Command::new("powershell.exe");
+        cmd.arg("-NoProfile")
+            .arg("-NonInteractive")
+            .arg("-WindowStyle")
+            .arg("Hidden")
+            .arg("-ExecutionPolicy")
+            .arg("Bypass")
+            .arg("-File")
+            .arg(script)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        if flags != 0 {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(flags);
+        }
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                append_update_log(dir, &format!("client: spawn[{label}] FAILED {e}"));
+                last_err = e.to_string();
+                continue;
+            }
+        };
+        append_update_log(dir, &format!("client: spawn[{label}] pid={}", child.id()));
+
+        // 等脚本写出起始日志（最多 ~3 秒）；进程中途退出就再等最后一眼
+        let mut waited = 0u32;
+        let mut alive = true;
+        while waited < 3000 {
+            if log_has_run(dir, run) {
+                append_update_log(dir, &format!("client: script alive（{label}），准备退出"));
+                return Ok(());
+            }
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    alive = false;
+                    break;
+                }
+                Ok(None) => {}
+                Err(_) => {}
+            }
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            waited += 150;
+        }
+        // 超时但进程还在：当它在慢慢启动，不再重来一遍（避免两个脚本打架）
+        if alive && child.try_wait().ok().flatten().is_none() {
+            append_update_log(dir, &format!("client: script alive（{label}·慢启动），准备退出"));
+            return Ok(());
+        }
+        last_err = format!("{label} 方式启动的脚本没有响应");
+        append_update_log(dir, &format!("client: {last_err}，换下一种方式"));
+    }
+    Err(format!(
+        "自动更新脚本没能启动（{last_err}）。\n请手动运行：{}\n（先退出本程序再运行）",
+        script.display()
+    ))
+}
+
+/// 往更新日志里追加一行（给排障用：客户端一侧的行与脚本一侧的行在同一个文件里，
+/// 一眼能看出"是没启动起来"还是"启动起来了但脚本里失败了"）。
+fn append_update_log(dir: &Path, line: &str) {
+    let log = dir.join("update.log");
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&log) {
+        use std::io::Write;
+        let _ = writeln!(f, "epoch {stamp}  {line}");
+    }
+}
+
+/// 生成更新脚本。参数全部按单引号字符串内联，避免 Any 注入/转义问题。
+fn build_update_script(
+    kind: &str,
+    file: &Path,
+    exe: &Path,
+    app_dir: &Path,
+    dir: &Path,
+    version: &str,
+    run: &str,
+) -> String {
+    let log = dir.join("update.log");
+    let installer_log = dir.join("installer.log");
+    let exe_name = exe
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "轻提词.exe".into());
+    let backup = app_dir.join(format!("{exe_name}.old-{version}"));
+    let is_installer = if kind == "installer" { "$true" } else { "$false" };
+    format!(
+        r#"$ErrorActionPreference = 'Continue'
+$log = {log}
+function Write-Log($m) {{ "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  $m" | Out-File -LiteralPath $log -Append -Encoding utf8 }}
+Write-Log 'update: start (run {run})'
+
+# 1) 等旧进程退出（按 PID 精确等，最多 60 秒）
+$oldPid = {pid}
+for ($i = 0; $i -lt 120; $i++) {{
+  if (-not (Get-Process -Id $oldPid -ErrorAction SilentlyContinue)) {{ break }}
+  Start-Sleep -Milliseconds 500
+}}
+Start-Sleep -Seconds 1
+Write-Log 'update: old process gone'
+
+$ok = $false
+$isInstaller = {is_installer}
+try {{
+  if ($isInstaller) {{
+    # 2a) 安装版：静默覆盖安装（/DIR 指回当前安装目录，/CLOSEAPPLICATIONS 兜底关掉残留进程）
+    $iargs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS',
+               ('/DIR="' + {app_dir} + '"'), ('/LOG="' + {installer_log} + '"'))
+    Write-Log ('update: running installer ' + {file})
+    $p = Start-Process -FilePath {file} -ArgumentList $iargs -PassThru -Wait
+    Write-Log ('update: installer exit=' + $p.ExitCode)
+    if ($p.ExitCode -eq 0) {{ $ok = $true }}
+  }} else {{
+    # 2b) 便携版：旧 exe 改名留底 → 写新的（改名运行中的 exe 是允许的）
+    $old = {backup}
+    if (Test-Path -LiteralPath $old) {{ Remove-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue }}
+    Move-Item -LiteralPath {exe} -Destination $old -Force
+    Copy-Item -LiteralPath {file} -Destination {exe} -Force
+    Write-Log ('update: exe replaced, backup=' + $old)
+    $ok = $true
+  }}
+}} catch {{
+  Write-Log ('update: FAILED ' + $_.Exception.Message)
+}}
+
+if ($ok) {{ Remove-Item -LiteralPath {file} -Force -ErrorAction SilentlyContinue }}
+Write-Log ('update: relaunch ' + {exe})
+try {{ Start-Process -FilePath {exe} }} catch {{ Write-Log ('update: relaunch failed ' + $_.Exception.Message) }}
+Write-Log 'update: done'
+"#,
+        log = ps_quote(&log.to_string_lossy()),
+        run = run,
+        pid = std::process::id(),
+        is_installer = is_installer,
+        app_dir = ps_quote(&app_dir.to_string_lossy()),
+        installer_log = ps_quote(&installer_log.to_string_lossy()),
+        file = ps_quote(&file.to_string_lossy()),
+        backup = ps_quote(&backup.to_string_lossy()),
+        exe = ps_quote(&exe.to_string_lossy()),
+    )
+}
+
+/// base64 解码（只用标准字母表；不引 crate，约 30 行）
+fn b64_decode(s: &str) -> Result<Vec<u8>, String> {
+    fn val(c: u8) -> Option<u32> {
+        match c {
+            b'A'..=b'Z' => Some((c - b'A') as u32),
+            b'a'..=b'z' => Some((c - b'a' + 26) as u32),
+            b'0'..=b'9' => Some((c - b'0' + 52) as u32),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let mut out: Vec<u8> = Vec::with_capacity(s.len() / 4 * 3);
+    let mut buf: u32 = 0;
+    let mut n = 0;
+    for &c in s.as_bytes() {
+        if c == b'=' || c == b'\n' || c == b'\r' || c == b' ' {
+            continue;
+        }
+        let v = val(c).ok_or_else(|| format!("base64 含非法字符：{}", c as char))?;
+        buf = (buf << 6) | v;
+        n += 1;
+        if n == 4 {
+            out.push((buf >> 16) as u8);
+            out.push((buf >> 8) as u8);
+            out.push(buf as u8);
+            buf = 0;
+            n = 0;
+        }
+    }
+    match n {
+        0 => {}
+        2 => out.push((buf >> 4) as u8),
+        3 => {
+            out.push((buf >> 10) as u8);
+            out.push((buf >> 2) as u8);
+        }
+        _ => return Err("base64 长度不合法".into()),
+    }
+    Ok(out)
+}
+
 // ============ 窗口控制（前端通过 invoke 调用） ============
 
 #[tauri::command]
@@ -749,7 +1116,10 @@ pub fn run() {
             create_folder,
             switch_data_dir,
             reset_data_dir,
-            export_notes
+            export_notes,
+            get_update_info,
+            save_update_file,
+            apply_update
         ])
         .run(context)
         .expect("error while running tauri application");

@@ -36,6 +36,7 @@
 | `tests/` | 三套回归：`test_rules.py`（62 项）、`test_accounts.py`（85 项）、`admin_panel_smoke.mjs`（95 项，真浏览器点后台）；只在本地跑，不参与部署 |
 | `.env.example` | 环境变量模板（服务端不自动读 .env，需按说明 export） |
 | `data/` | 运行时自动创建：用户、会员、用量、订单、每日统计、操作日志、管理员密钥、收款码、自动备份 |
+| `updates/` | **4.7.0** 在线升级的更新包目录（`latest.json` + `files/`）；由 `scripts/make-update-manifest.mjs` 生成后 scp 上来，详见「二·二」 |
 
 **管理后台**：部署后浏览器打开 `http://<服务器IP>:2581/admin`，
 粘贴管理员密钥即可确认收款开通会员（4.1.2 起是电脑端控制台：左侧导航 + 概览看板 + 实时刷新，
@@ -163,6 +164,55 @@ node tests/admin_panel_smoke.mjs        # 只读模式 8 项：能开、标题�
 | `MP_RATE_LIMIT_SEC` | `2` | 同一用户两次调用最小间隔（秒） |
 | `MP_DEEPSEEK_KEY` | **无默认值（必填）** | DeepSeek Key；未设置时服务**拒绝启动**（本地联调可用 `MP_MOCK=1` 绕过） |
 | `MP_MOCK` | 关 | `=1` 时不调用 DeepSeek，返回模拟结果（本地联调用） |
+| `MP_UPDATES_DIR` | 脚本同目录 `/updates` | **4.7.0** 在线升级的更新包目录（不在默认位置时才需要设） |
+
+---
+
+## 二·二、在线升级（4.7.0：软件内直接升级）
+
+客户端启动会静默查一次 `<更新源>/updates/latest.json`（设置 → 关于里也能手动查）。
+更新源默认就是本服务 `http://<服务器>:2581/updates`，本服务负责发两样东西：
+
+| 路由 | 作用 |
+|---|---|
+| `GET /updates/latest.json` | 最新版本清单（版本号 / 更新说明 / 两个下载项各自的 size 与 sha256） |
+| `GET /updates/files/<文件名>` | 安装包或便携版 exe（分块发送，256 KB 一块；支持 `curl -I` 探活） |
+| `GET /updates/` | 返回一行用法提示，方便浏览器随手验证 |
+
+**目录长这样**（由 `scripts/make-update-manifest.mjs` 生成，整目录 scp 上来即可）：
+
+```
+server_ai/updates/
+├── latest.json                        # 清单（小、文本、可以进版本库）
+└── files/
+    ├── 轻提词安装包_v4.7.0.exe          # 安装版走这个（静默覆盖装，更新快捷方式/注册表）
+    └── 轻提词_v4.7.0.exe                # 便携版走这个（换 exe，旧文件留 .old-<版本>）
+```
+
+**发版当天怎么操作**
+
+```bash
+# 本机：生成清单 + 复制产物（会打印 size 与 sha256）
+node scripts/make-update-manifest.mjs --notes-file release/notes-4.7.0.md
+# 上传（整个目录，含 files/）
+scp -r server_ai/updates root@8.163.51.216:/home/admin/ai_server/
+# 服务器：确认能取到（不需要登录）
+curl -s http://127.0.0.1:2581/updates/latest.json
+curl -sI http://127.0.0.1:2581/updates/files/轻提词安装包_v4.7.0.exe
+```
+
+**注意**
+
+- **更新包不校验登录态**（谁都能下载更新包，这没问题）；文件名做了白名单，`..`、子目录、
+  隐藏文件一律拒绝，路径穿越已挡。
+- **清单别放进 CDN 长缓存**：`latest.json` 响应头是 `no-cache`（现取现发），
+  文件本身 `max-age=300`。若前面挂了 Nginx/CDN，记得让 `latest.json` 不缓存，否则发新版不生效。
+- **必须允许跨域**：客户端页面源是 `http://tauri.localhost`，本服务的 `/updates` 已带
+  `Access-Control-Allow-Origin: *`。换成别的静态服务器发更新包时，同样要带 CORS 头。
+- **明文 HTTP + 未签名**：SHA-256 只能防传输损坏/文件被换，**挡不住中间人**。
+  后续建议上 HTTPS（域名 + 证书）并给 exe 做代码签名。
+- 上传新包后不用重启服务（每次请求现读文件），但 `MP_UPDATES_DIR` 放错位置时
+  启动横幅里的「在线升级」一行会显示「未放置 latest.json」，照它排查即可。
 
 ---
 
