@@ -88,6 +88,51 @@ const restoreKeys = () => {
   for (const f of backups) spawnSync('reg', ['import', f], { encoding: 'utf8' });
 };
 
+/* ---------- 1.5 备份「轻提词」快捷方式（4.7.0 才发现：这个测试会顺手删掉用户桌面那份） ----------
+   安装包和用户机器上的正式安装共用同一个 AppId，{autodesktop}\轻提词.lnk 是同一个路径：
+   测试安装会先创建它（指向临时目录），卸载时又把它删掉 —— 连用户原来那份一起没了。
+   这里先按字节备份，跑完原样还原。 */
+const shellLnkPaths = (() => {
+  const q = (cmd) => (spawnSync('powershell', ['-NoProfile', '-Command', cmd], { encoding: 'utf8' }).stdout || '').trim();
+  const desk = q("[Environment]::GetFolderPath('Desktop')");
+  const appdata = q("[Environment]::GetFolderPath('ApplicationData')");
+  const progdata = process.env.ProgramData || 'C:\\ProgramData';
+  const out = [];
+  if (desk) out.push(path.join(desk, '轻提词.lnk'));
+  out.push(path.join(progdata, 'Desktop', '轻提词.lnk'));
+  if (appdata) out.push(path.join(appdata, 'Microsoft', 'Windows', 'Start Menu', 'Programs', '轻提词', '轻提词.lnk'));
+  out.push(path.join(progdata, 'Microsoft', 'Windows', 'Start Menu', 'Programs', '轻提词', '轻提词.lnk'));
+  return [...new Set(out)];
+})();
+const lnkBackups = [];
+for (const p of shellLnkPaths) {
+  const exists = fs.existsSync(p);
+  const bak = path.join(os.tmpdir(), 'mp-lnk-' + lnkBackups.length + '.lnk');
+  if (exists) fs.copyFileSync(p, bak);
+  lnkBackups.push({ path: p, exists, bak });
+}
+const hadLnks = lnkBackups.filter((b) => b.exists).length;
+info('记录了 ' + hadLnks + ' 个「轻提词」快捷方式（测试结束后会还原）');
+
+const restoreShortcuts = () => {
+  for (const b of lnkBackups) {
+    try {
+      if (b.exists) {
+        const same = fs.existsSync(b.path) && fs.readFileSync(b.path).equals(fs.readFileSync(b.bak));
+        if (!same) {
+          fs.mkdirSync(path.dirname(b.path), { recursive: true });
+          fs.copyFileSync(b.bak, b.path);
+        }
+      } else if (fs.existsSync(b.path)) {
+        fs.rmSync(b.path, { force: true });
+      }
+    } catch (e) {
+      info('快捷方式还原失败 ' + b.path + '：' + e.message);
+    }
+  }
+  if (hadLnks) ok('原有的桌面 / 开始菜单快捷方式已还原（' + hadLnks + ' 个）');
+};
+
 /* ---------- 2. 静默安装到临时目录 ---------- */
 const DIR = path.join(os.tmpdir(), 'mp-installer-verify');
 console.log('[1] 静默安装到 ' + DIR);
@@ -101,6 +146,7 @@ const exeName = exeNames.find((n) => fs.existsSync(path.join(DIR, n)));
 if (!exeName) {
   bad('安装目录里没有主程序 —— 这个安装包是坏的（4.1.8 的 NSIS 包就是这个症状）');
   restoreKeys();
+  restoreShortcuts();
   console.log('='.repeat(64));
   console.log('结论：安装包不可用，别发出去');
   process.exit(1);
@@ -202,6 +248,7 @@ if (backups.length) {
 } else {
   ok('机器上原本没有「轻提词」安装，测试痕迹已清空');
 }
+restoreShortcuts();
 
 console.log('='.repeat(64));
 console.log(fail === 0

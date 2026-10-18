@@ -104,6 +104,9 @@ cargo build --release --features tauri/custom-protocol     # 或用 .\build.ps1�
 node scripts/verify-installer.mjs     # 真机静默装一次 → 校验版本/界面 → 卸载
 ```
 
+> 它会临时摘掉已有的「轻提词」卸载项、装到临时目录、跑完再还原（**桌面 / 开始菜单快捷方式也一起还原**
+> —— 4.7.0 才发现：测试安装与正式安装共用同一个 AppId，卸载时会连用户桌面上那份一起删掉）。
+
 另一条路线是 Tauri 自带的 NSIS（`bundle.targets=["nsis"]`）：
 
 ```powershell
