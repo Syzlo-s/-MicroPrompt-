@@ -215,7 +215,7 @@ export default function SettingsDialog({
   const updCheck = useUpdateStore((s) => s.check);
   const updDownload = useUpdateStore((s) => s.download);
   const updApply = useUpdateStore((s) => s.apply);
-  const updExpand = useUpdateStore((s) => s.expand);
+  const updSkip = useUpdateStore((s) => s.skipCurrent);
   const updSetAuto = useUpdateStore((s) => s.setAutoCheck);
   React.useEffect(() => {
     if (!updVersion) void useUpdateStore.getState().loadInfo();
@@ -916,7 +916,7 @@ export default function SettingsDialog({
 
   const viewAbout = (
     <div className="set-section set-about">
-      <div className="set-hint">轻提词 测试 4.7.0 · 本地桌面速记 · AI 额度与会员制</div>
+      <div className="set-hint">轻提词 测试 4.7.1 · 本地桌面速记 · AI 额度与会员制</div>
       <div className="set-hint">
         AI 免费版每天 {aiQuota?.freeQuota ?? 3} 次 · 日卡 ¥2（24 小时）/ 月卡 ¥8（30 天）
       </div>
@@ -946,26 +946,29 @@ export default function SettingsDialog({
             />
           </div>
         )}
+        {/* 更新说明：右下角小按钮只放一个字都不多的短词，详细内容都在这里 */}
+        {updManifest?.notes &&
+          (updPhase === "available" ||
+            updPhase === "downloading" ||
+            updPhase === "ready" ||
+            updPhase === "error") && (
+            <div className="upd-set-notes">{updManifest.notes}</div>
+          )}
         <div className="upd-set-actions">
           {updPhase === "available" && (
             <>
               <button className="btn btn-primary upd-btn" onClick={() => void updDownload()}>
                 立即更新
               </button>
-              <button className="upd-link" onClick={updExpand}>
-                看更新说明
+              <button className="upd-link" onClick={updSkip}>
+                忽略此版本
               </button>
             </>
           )}
           {updPhase === "ready" && (
-            <>
-              <button className="btn btn-primary upd-btn" onClick={() => void updApply()}>
-                重启并安装
-              </button>
-              <button className="upd-link" onClick={updExpand}>
-                看更新说明
-              </button>
-            </>
+            <button className="btn btn-primary upd-btn" onClick={() => void updApply()}>
+              重启并安装
+            </button>
           )}
           {updPhase === "error" && (
             <button className="btn upd-btn" onClick={() => void updDownload()}>

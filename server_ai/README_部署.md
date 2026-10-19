@@ -1,4 +1,4 @@
-# 轻提词 AI 中转服务 · 4.7.0 部署与运维
+# 轻提词 AI 中转服务 · 4.7.1 部署与运维
 
 > 相对 4.0.0 的变化：**加了鉴权、额度、会员、订单**。
 > 4.0.0 的接口是完全开放的（任何人拿到地址就能刷你的 DeepSeek Key），
@@ -27,6 +27,10 @@
 > 并支持 `MP_UPDATES_DIR` 指定更新包目录；**账号 / AI / 订单等既有接口一行没改**，
 > 老客户端照常用。**注意**：客户端只有在服务器放好 `updates/`（含 `latest.json`）之后才能查到更新，
 > 只升级 `ai_server.py` 而不放更新包 = 客户端静默跳过（不报错，但也不提示）—— 详见「二·二」。
+>
+> **4.7.1 说明**：客户端把升级入口从浮层卡片改成右下角一个小按钮（`新版本` → `下载 42%` → `重启更新`），
+> **服务端代码零改动**，只是 `VERSION` 跟着升到 4.7.1 保持同号、`updates/` 里换成 4.7.1 的两个产物。
+> 老客户端（4.7.0）对着 4.7.1 的清单照样能升。
 
 ---
 
@@ -122,7 +126,7 @@ node tests/admin_panel_smoke.mjs        # 本地模式：自建临时服务端 +
 
 ```powershell
 cd 轻提词V4.0\server_ai
-$env:MP_PANEL_URL='http://8.163.51.216:2581/admin'; $env:MP_ADMIN_KEY='<你的管理员密钥>'
+$env:MP_PANEL_URL='http://<你的服务器IP>:2581/admin'; $env:MP_ADMIN_KEY='<你的管理员密钥>'
 node tests/admin_panel_smoke.mjs        # 只读模式 8 项：能开、标题对、密钥有效、列表/空态正常、表头是 4.1.0、账号按钮在、无 JS 报错、无 5xx
 ```
 
@@ -174,7 +178,7 @@ node tests/admin_panel_smoke.mjs        # 只读模式 8 项：能开、标题�
 
 ---
 
-## 二·二、在线升级（4.7.0：软件内直接升级）
+## 二·二、在线升级（4.7.0 起：软件内直接升级）
 
 客户端启动会静默查一次 `<更新源>/updates/latest.json`（设置 → 关于里也能手动查）。
 更新源默认就是本服务 `http://<服务器>:2581/updates`，本服务负责发两样东西：
@@ -191,20 +195,20 @@ node tests/admin_panel_smoke.mjs        # 只读模式 8 项：能开、标题�
 server_ai/updates/
 ├── latest.json                        # 清单（小、文本、可以进版本库）
 └── files/
-    ├── 轻提词安装包_v4.7.0.exe          # 安装版走这个（静默覆盖装，更新快捷方式/注册表）
-    └── 轻提词_v4.7.0.exe                # 便携版走这个（换 exe，旧文件留 .old-<版本>）
+    ├── 轻提词安装包_v4.7.1.exe          # 安装版走这个（静默覆盖装，更新快捷方式/注册表）
+    └── 轻提词_v4.7.1.exe                # 便携版走这个（换 exe，旧文件留 .old-<版本>）
 ```
 
 **发版当天怎么操作**
 
 ```bash
 # 本机：生成清单 + 复制产物（会打印 size 与 sha256）
-node scripts/make-update-manifest.mjs --notes-file release/notes-4.7.0.md
+node scripts/make-update-manifest.mjs --notes-file release/notes-4.7.1.md
 # 上传（整个目录，含 files/）
-scp -r server_ai/updates root@8.163.51.216:/home/admin/ai_server/
+scp -r server_ai/updates root@<你的服务器IP>:/home/admin/ai_server/
 # 服务器：确认能取到（不需要登录）
 curl -s http://127.0.0.1:2581/updates/latest.json
-curl -sI http://127.0.0.1:2581/updates/files/轻提词安装包_v4.7.0.exe
+curl -sI http://127.0.0.1:2581/updates/files/轻提词安装包_v4.7.1.exe
 ```
 
 **注意**
@@ -402,7 +406,8 @@ python3 admin_cli.py key                # 打印当前管理员密钥
 
 ### 管理接口（后台页面用的就是它们，也可直接 curl / 接你自己的脚本）
 
-都要求请求头 `X-Admin-Key: <管理员密钥>`（也支持 URL 上带 `?key=`）：
+都要求请求头 `X-Admin-Key: <管理员密钥>`（**不支持把密钥放在 URL 上**，
+避免漏进访问日志、Referer 和 shell 历史）：
 
 | 接口 | 作用 |
 |---|---|
@@ -535,7 +540,7 @@ python3 sync_admin_page.py --check
 node tests/admin_panel_smoke.mjs          # 真起无头 Chrome 点后台（95 项）
 MP_SHOT=D:\shots\p node tests/admin_panel_smoke.mjs   # 顺手把各页签截图（评审看设计用）
 # 对着线上只读巡检（不改任何真实数据）：
-MP_PANEL_URL=http://8.163.51.216:2581/admin MP_ADMIN_KEY=<线上密钥> node tests/admin_panel_smoke.mjs
+MP_PANEL_URL=http://<你的服务器IP>:2581/admin MP_ADMIN_KEY=<线上密钥> node tests/admin_panel_smoke.mjs
 ```
 
 它验的不是「页面长得对」，而是「点了按钮 → 磁盘文件真的变了」：重置用量、开通免费、

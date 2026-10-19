@@ -152,7 +152,11 @@ PORT = int(os.environ.get("MP_PORT", "2581"))
 CASDOOR_URL = os.environ.get("MP_CASDOOR_URL", "http://127.0.0.1:2580").rstrip("/")
 
 # ---- 4.1.0 自建账号模块 ----
-VERSION = "4.7.0"
+VERSION = "4.7.1"
+# 跨域策略：默认空 = 管理接口（/ai/admin/*）不发 CORS 头，只有同源的后台页面能用；
+# 客户端接口照旧放开（桌面端 WebView2 的 origin 是 http://tauri.localhost，必须允许）。
+# 若后台要挪到别的域下面访问，设 MP_CORS_ORIGINS=* 即恢复 4.7.0 的旧行为。
+CORS_ORIGINS = os.environ.get("MP_CORS_ORIGINS", "").strip()
 # casdoor：令牌拿去问 Casdoor（4.0.3 的行为，默认，便于随时回滚）
 # builtin：令牌本地校验，并额外监听 MP_AUTH_PORT（客户端写死的 2580）
 AUTH_MODE = (os.environ.get("MP_AUTH_MODE", "casdoor") or "casdoor").strip().lower()
@@ -160,7 +164,8 @@ AUTH_PORT = int(os.environ.get("MP_AUTH_PORT", "2580"))
 # 客户端 .env 里的 client_id（前端可提取，不是机密）；secret 留空表示只校验"存在且非空"
 AUTH_CLIENT_ID = os.environ.get("MP_AUTH_CLIENT_ID", "b49640f6c4dabd78ce94").strip()
 AUTH_CLIENT_SECRET = os.environ.get("MP_AUTH_CLIENT_SECRET", "").strip()
-JWT_TTL_SEC = int(os.environ.get("MP_JWT_TTL", "604800"))     # 7 天，与 Casdoor 原值一致
+JWT_TTL_SEC = int(os.environ.get("MP_JWT_TTL_SEC",
+                  os.environ.get("MP_JWT_TTL", "604800")))     # 7 天，与 Casdoor 原值一致
 PBKDF2_ITERS = int(os.environ.get("MP_PBKDF2_ITERS", "120000"))
 LOGIN_MAX_FAIL = int(os.environ.get("MP_LOGIN_MAX_FAIL", "5"))
 LOGIN_LOCK_SEC = int(os.environ.get("MP_LOGIN_LOCK_SEC", "600"))
@@ -3489,6 +3494,7 @@ def call_deepseek(text, system_prompt):
 class Handler(BaseHTTPRequestHandler):
     server_version = "MicroPromptAI/" + VERSION
     store = None  # 由 main 注入
+    _admin_route = False  # 本次请求是否命中管理接口（决定要不要发跨域头）
 
     def end_headers(self):
         """统一补一行 Connection: close（4.1.6）。
@@ -3508,6 +3514,15 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- 基础输出 ----
     def _cors(self):
+        """跨域头。
+
+        管理接口只由同源的 /admin 页面调用，所以默认**不发** ACAO —— 别的站点
+        即便拿到了管理员密钥，浏览器也不会放它的预检过去。同源请求本来就不需要
+        这些头，后台面板照常工作。
+        客户端接口（/ai/polish、/api/login、/updates 等）仍按原样放开。
+        """
+        if CORS_ORIGINS != "*" and getattr(self, "_admin_route", False):
+            return
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header(
             "Access-Control-Allow-Headers", "Content-Type, Authorization, X-Admin-Key"
@@ -3661,7 +3676,10 @@ class Handler(BaseHTTPRequestHandler):
             return None
 
     def _need_admin(self):
-        key = self.headers.get("X-Admin-Key", "") or self._query().get("key", "")
+        # 只认请求头。密钥放 URL 上会漏进访问日志、Referer 和 shell 历史，
+        # 所以 4.7.0 起不再支持 ?key=；自带工具（admin_cli / selfcheck / 测试）
+        # 一直都走 X-Admin-Key 头，不受影响。
+        key = self.headers.get("X-Admin-Key", "")
         if not self.store.check_admin(key):
             # 失败记录只进内存：被人拿错密钥猛刷时，也不能变成磁盘写入放大
             self.store.admin_fail(self.client_address[0] if self.client_address else "")
@@ -3679,6 +3697,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- 路由 ----
     def do_OPTIONS(self):
+        self._admin_route = self._path().startswith("/ai/admin/")
         self.send_response(204)
         self._cors()
         self.end_headers()
@@ -3686,6 +3705,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         """只给 /updates 用：运维确认更新包在不在、多大（curl -I）"""
         path = self._path()
+        self._admin_route = path.startswith("/ai/admin/")
         if self._updates_route(path, head_only=True):
             return
         self.send_response(404)
@@ -3695,6 +3715,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self._path()
+        self._admin_route = path.startswith("/ai/admin/")
         if self._updates_route(path):
             return
         if path in ("/admin", "/admin/"):
@@ -3754,6 +3775,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self._path()
+        self._admin_route = path.startswith("/ai/admin/")
         # 额度查询同时支持 POST：旧版服务端对 GET 会回 501 且不带 CORS 头，
         # 浏览器会当成"网络失败"，客户端就分不清"服务端旧版"和"连不上"。
         # 走 POST 时旧版会回带 CORS 头的 404，客户端即可准确提示"服务端还是旧版本"。

@@ -4215,200 +4215,132 @@ button:focus-visible,
 }
 
 /* ============================================================
- * 在线升级（4.7.0）
- *   .upd-card  右上角浮出的提示卡（挂在 main.tsx，与登录态无关）
- *   .upd-*     卡片内部；.upd-set* 是设置 → 关于里的那一块
- *   进场 --ease-out-back、退场 --ease-in-cubic，与 Toast 同一套语言
+ * 在线升级（4.7.1）
+ *   .upd-pill  右下角工具栏里的小按钮（SettingsToolbar 最左边，没有新版就不渲染）
+ *              available 新版本 / downloading 下载 42% / ready 重启更新
+ *   .upd-set*  设置 → 关于里的那块（更新说明、手动检查、忽略此版本）
+ * 配色走主题变量；进度条画在按钮自己身上（填充从左往右长），
+ * 缓动与全局一致：进场 OutBack，悬停 / 按下 160ms OutCubic，进度 280ms OutCubic
  * ============================================================ */
-.upd-card {
-  position: fixed;
-  top: 52px;
-  right: 16px;
-  z-index: 880;
-  width: 316px;
-  padding: 12px 13px 11px;
-  border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(23, 26, 35, 0.92);
-  color: #ffffff;
-  font-size: 12px;
-  line-height: 1.55;
-  box-shadow: 0 18px 40px -18px rgba(15, 23, 42, 0.66),
-    0 2px 10px -4px rgba(15, 23, 42, 0.5);
-  backdrop-filter: blur(12px) saturate(1.35);
-  -webkit-backdrop-filter: blur(12px) saturate(1.35);
-  animation: upd-in 0.28s var(--ease-out-back) both;
-}
-.upd-card.leaving {
-  animation: upd-out 0.19s var(--ease-in-cubic) both;
-}
-@keyframes upd-in {
-  from {
-    opacity: 0;
-    transform: translateX(14px) scale(0.97);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-@keyframes upd-out {
-  from {
-    opacity: 1;
-    transform: none;
-  }
-  to {
-    opacity: 0;
-    transform: translateX(10px) scale(0.98);
-  }
-}
-.upd-head {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-.upd-dot {
-  width: 7px;
-  height: 7px;
-  flex: none;
-  border-radius: 999px;
-  background: linear-gradient(135deg, rgba(var(--brand-rgb), 1), rgb(var(--brand-strong-rgb)));
-  box-shadow: 0 0 0 3px rgba(var(--brand-rgb), 0.16);
-}
-.upd-dot[data-phase="ready"] {
-  background: linear-gradient(135deg, #34d399, #10b981);
-  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.18);
-}
-.upd-dot[data-phase="error"] {
-  background: linear-gradient(135deg, #fb7185, #ef4444);
-  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.18);
-}
-.upd-title {
-  flex: 1;
-  font-size: 12.5px;
-  font-weight: 600;
-  letter-spacing: 0.2px;
-}
-.upd-x {
+.upd-pill {
+  position: relative;
   flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 78px;
+  height: 24px;
+  margin-right: 4px;
+  padding: 0 8px;
   border-radius: 999px;
-  border: 1px solid transparent;
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(var(--brand-rgb), 0.42);
+  background: rgba(var(--brand-rgb), 0.08);
+  color: rgb(var(--brand-strong-rgb));
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
   cursor: pointer;
+  animation: upd-pill-in 0.3s var(--ease-out-back) both;
   transition: background-color 0.16s var(--ease-out-cubic),
+    border-color 0.16s var(--ease-out-cubic),
+    box-shadow 0.16s var(--ease-out-cubic),
     color 0.16s var(--ease-out-cubic);
 }
-.upd-x:hover {
-  background: rgba(255, 255, 255, 0.18);
-  color: #fff;
+.upd-pill:not(:disabled):hover {
+  background: rgba(var(--brand-rgb), 0.16);
+  border-color: rgba(var(--brand-rgb), 0.66);
+  box-shadow: 0 2px 8px -3px rgba(var(--brand-rgb), 0.45);
 }
-.upd-meta {
-  margin-top: 5px;
-  color: rgba(255, 255, 255, 0.62);
-  font-size: 11px;
+.upd-pill:not(:disabled):active {
+  background: rgba(var(--brand-rgb), 0.24);
+  box-shadow: 0 1px 4px -2px rgba(var(--brand-rgb), 0.4);
 }
-.upd-notes {
-  margin-top: 7px;
-  max-height: 118px;
-  overflow-y: auto;
-  padding: 7px 9px;
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.86);
-  font-size: 11.5px;
-  white-space: pre-wrap;
-  word-break: break-word;
+.upd-pill:disabled {
+  cursor: default;
 }
-.upd-notes::-webkit-scrollbar {
-  width: 6px;
+.upd-pill:focus-visible {
+  outline: none;
 }
-.upd-notes::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.22);
-  border-radius: 999px;
+@keyframes upd-pill-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
-.upd-progress {
-  margin-top: 9px;
-}
-.upd-bar {
-  height: 5px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.14);
-  overflow: hidden;
-}
-.upd-bar-fill {
-  height: 100%;
+
+/* 进度条就是按钮自己的底：从左往右长，圆角由按钮裁掉 */
+.upd-pill-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
   width: 0;
-  border-radius: 999px;
-  background: linear-gradient(90deg, rgba(var(--brand-rgb), 1), rgb(var(--brand-strong-rgb)));
+  background: rgba(var(--brand-rgb), 0.3);
   transition: width 0.28s var(--ease-out-cubic);
+  pointer-events: none;
 }
-.upd-bar-fill.indet {
-  width: 38%;
-  animation: upd-indet 1.15s ease-in-out infinite;
+.upd-pill-fill.indet {
+  width: 40%;
+  animation: upd-pill-sweep 1.1s ease-in-out infinite;
 }
-@keyframes upd-indet {
-  0% {
-    transform: translateX(-100%);
+@keyframes upd-pill-sweep {
+  from {
+    transform: translateX(-110%);
   }
-  100% {
-    transform: translateX(265%);
+  to {
+    transform: translateX(255%);
   }
 }
-.upd-pct {
-  margin-top: 4px;
-  color: rgba(255, 255, 255, 0.62);
-  font-size: 11px;
+.upd-pill-label {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-variant-numeric: tabular-nums;
 }
-.upd-err {
-  margin-top: 8px;
-  padding: 6px 9px;
-  border-radius: 9px;
-  background: rgba(239, 68, 68, 0.16);
-  border: 1px solid rgba(248, 113, 113, 0.35);
-  color: #fecaca;
-  font-size: 11.5px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 96px;
-  overflow-y: auto;
+
+/* 下载 + 校验都过了：变实心主色，明确「点它重启」 */
+.upd-pill[data-phase="ready"] {
+  border-color: transparent;
+  background: linear-gradient(
+    135deg,
+    rgba(var(--brand-rgb), 1),
+    rgb(var(--brand-strong-rgb))
+  );
+  color: var(--c-white);
+  box-shadow: 0 4px 12px -4px rgba(var(--brand-rgb), 0.72);
 }
-.upd-actions {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  margin-top: 10px;
-  flex-wrap: wrap;
+.upd-pill[data-phase="ready"]:not(:disabled):hover {
+  background: linear-gradient(
+    135deg,
+    rgb(var(--brand-strong-rgb)),
+    rgb(var(--brand-strong-rgb))
+  );
+  box-shadow: 0 6px 16px -5px rgba(var(--brand-rgb), 0.85);
 }
-.upd-btn {
-  padding: 4px 13px !important;
-  font-size: 11.5px !important;
+
+/* 失败：红边红字，点一下重试 */
+.upd-pill[data-phase="error"] {
+  border-color: rgba(239, 68, 68, 0.45);
+  background: rgba(239, 68, 68, 0.08);
+  color: var(--c-red);
 }
-.upd-link {
-  border: none;
-  background: none;
-  padding: 0;
-  color: rgba(255, 255, 255, 0.62);
-  font-size: 11.5px;
-  cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  transition: color 0.16s var(--ease-out-cubic);
+.upd-pill[data-phase="error"]:not(:disabled):hover {
+  border-color: rgba(239, 68, 68, 0.7);
+  background: rgba(239, 68, 68, 0.14);
+  box-shadow: 0 2px 8px -3px rgba(239, 68, 68, 0.5);
 }
-.upd-link:hover {
-  color: #fff;
-}
-.upd-src {
-  margin-top: 8px;
-  color: rgba(255, 255, 255, 0.34);
-  font-size: 10.5px;
-  word-break: break-all;
+
+/* 正在重启：进程马上退出，不再接受点击 */
+.upd-pill[data-phase="applying"] {
+  opacity: 0.72;
 }
 
 /* 设置 → 关于 里的更新块（跟随主题，不用暗色玻璃） */
@@ -4435,6 +4367,27 @@ button:focus-visible,
   opacity: 0.72;
   word-break: break-word;
   white-space: pre-wrap;
+}
+.upd-set-notes {
+  margin-top: 7px;
+  max-height: 104px;
+  overflow-y: auto;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.03);
+  color: var(--c-text-sub);
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+.upd-set-notes::-webkit-scrollbar {
+  width: 6px;
+}
+.upd-set-notes::-webkit-scrollbar-thumb {
+  background: #d5dbe5;
+  border-radius: 999px;
 }
 .upd-bar-set {
   margin-top: 7px;

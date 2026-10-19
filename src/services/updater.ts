@@ -88,8 +88,8 @@ interface UpdateStore {
   /** 本次要用的下载项（按安装版 / 便携版选） */
   asset: UpdateAsset | null;
   filePath: string;
-  /** 卡片是否被用户临时收起 */
-  collapsed: boolean;
+  /** 用户点过「忽略此版本」：这个版本不再主动提示（设置 → 关于 里仍可更新） */
+  skipped: boolean;
   autoCheck: boolean;
 
   loadInfo: () => Promise<UpdateInfo | null>;
@@ -98,8 +98,6 @@ interface UpdateStore {
   apply: () => Promise<void>;
   setAutoCheck: (on: boolean) => void;
   skipCurrent: () => void;
-  dismiss: () => void;
-  expand: () => void;
 }
 
 /** 4.6.0 / 4.10.2 这类点号版本比较：a > b 返回 true（忽略 -beta 之类后缀） */
@@ -198,7 +196,7 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
   error: "",
   asset: null,
   filePath: "",
-  collapsed: false,
+  skipped: false,
   autoCheck: (localStorage.getItem(LS_AUTO) ?? "1") !== "0",
 
   loadInfo: async () => {
@@ -231,7 +229,7 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
       if (manifest.exe?.url) manifest.exe.url = resolveUrl(manifest.exe.url, manifestUrl);
 
       if (!isNewer(manifest.version, info.version)) {
-        set({ phase: "latest", manifest, asset: null, filePath: "" });
+        set({ phase: "latest", manifest, asset: null, filePath: "", skipped: false });
         localStorage.removeItem(LS_APPLIED);
         if (!silent) showToast({ text: `已是最新版本 ${info.version}`, tone: "success" });
         return;
@@ -243,7 +241,14 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
       if (!asset?.url) throw new Error("更新清单里没有可用的下载地址");
 
       const skipped = localStorage.getItem(LS_SKIP) || "";
-      set({ phase: "available", manifest, asset, filePath: "", error: "", collapsed: skipped === manifest.version });
+      set({
+        phase: "available",
+        manifest,
+        asset,
+        filePath: "",
+        error: "",
+        skipped: skipped === manifest.version,
+      });
       if (!silent && skipped === manifest.version) {
         showToast({ text: `新版本 ${manifest.version} 已忽略，可在设置 → 关于里更新`, tone: "info" });
       }
@@ -258,7 +263,12 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
   download: async () => {
     const { manifest, asset } = get();
     if (!manifest || !asset) return;
-    set({ phase: "downloading", error: "", progress: { got: 0, total: asset.size ?? 0 } });
+    set({
+      phase: "downloading",
+      error: "",
+      skipped: false,
+      progress: { got: 0, total: asset.size ?? 0 },
+    });
     try {
       const bytes = await fetchBytes(asset.url, (p) => set({ progress: p }));
       if (asset.size && bytes.length !== asset.size) {
@@ -275,7 +285,7 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
         name,
         base64: toBase64(bytes),
       });
-      set({ phase: "ready", filePath, collapsed: false });
+      set({ phase: "ready", filePath });
       showToast({ text: `新版本 ${manifest.version} 已下载完成`, tone: "success", duration: 3000 });
     } catch (e) {
       const msg = String((e as Error)?.message ?? e);
@@ -308,17 +318,13 @@ export const useUpdateStore = create<UpdateStore>((set, get) => ({
     set({ autoCheck: on });
   },
 
+  /** 「忽略此版本」：记下这个版本，右下角小按钮不再出现；设置 → 关于 里仍能更新 */
   skipCurrent: () => {
     const v = get().manifest?.version;
     if (v) localStorage.setItem(LS_SKIP, v);
-    set({ collapsed: true });
+    set({ skipped: true });
     showToast({ text: `已忽略 ${v}，可在设置 → 关于里手动更新`, tone: "info" });
   },
-
-  /** 「稍后」：只是收起卡片，下次启动还会提醒（不写"忽略"） */
-  dismiss: () => set({ collapsed: true }),
-
-  expand: () => set({ collapsed: false }),
 }));
 
 /** 启动时的静默检查（错过一次就等下次启动，不轮询） */

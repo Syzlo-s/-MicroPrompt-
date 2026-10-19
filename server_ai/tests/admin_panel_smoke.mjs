@@ -22,7 +22,7 @@
 //     MP_PYTHON=python3.6 MP_CHROME=<路径> ...    # 指定解释器 / 浏览器
 //
 // 远程模式（部署后从本机验线上面板，只做只读检查，不会改任何真实账号数据）：
-//     MP_PANEL_URL=http://8.163.51.216:2581/admin MP_ADMIN_KEY=<密钥> node tests/admin_panel_smoke.mjs
+//     MP_PANEL_URL=http://<你的服务器IP>:2581/admin MP_ADMIN_KEY=<密钥> node tests/admin_panel_smoke.mjs
 // =============================================================================
 
 import { spawn, spawnSync } from 'node:child_process';

@@ -1,9 +1,11 @@
 import Icon from "./Icon";
+import UpdateButton from "./UpdateButton";
 import designSvg from "../assets/icons/design.svg";
 
 /**
  * 设置工具栏：页面右下角的小工具栏，外观与底部主工具栏一致。
- * 含两个按钮：「展开 / 收起笔记列表」与「设置」。
+ * 含两个常驻按钮：「展开 / 收起笔记列表」与「设置」；
+ * 有新版时最左边多出一个小按钮（新版本 → 下载中 → 重启更新）。
  * 展开按钮图标为「汉堡菜单 ↔ 叉」动画（参照经典 hamburger 动效）。
  */
 export default function SettingsToolbar({
@@ -17,6 +19,7 @@ export default function SettingsToolbar({
 }) {
   return (
     <div className="settings-toolbar">
+      <UpdateButton />
       <button
         className={"tool-btn dock-toggle" + (drawerOpen ? " open" : "")}
         title={drawerOpen ? "收起笔记列表" : "展开笔记列表"}

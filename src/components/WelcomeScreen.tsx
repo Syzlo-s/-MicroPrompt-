@@ -28,7 +28,7 @@ export default function WelcomeScreen() {
           <div className="welcome-brand">
             <div>欢迎使用 [ 轻提词 ]（MicroPrompt）</div>
             <div>曾用名： [ 桌面速记 ]（DesktopNotes）</div>
-            <div>当前版本：测试 4.7.0</div>
+            <div>当前版本：测试 4.7.1</div>
           </div>
 
           <h2 className="welcome-h2">如何使用：</h2>
