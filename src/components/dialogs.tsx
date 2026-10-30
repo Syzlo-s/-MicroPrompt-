@@ -1,14 +1,21 @@
 import React, { useEffect, useRef, useState } from "react";
 
 /* ============================================================
- * 轻量自绘弹窗（对齐 QMessageBox / QInputDialog 视觉规范：
- * 白底、圆角 8、边框 #D8D8D8、正文 13px #1A1A1A、按钮 12px）
+ * 轻量自绘弹窗（4.8.5 重做视觉）
+ * ------------------------------------------------------------
+ * 统一使用 .dlg-* 类，不改动设置 / 存储 / 密码面板里复用的
+ * .dialog-input 等旧类，避免连带影响。
+ *
+ * 输入框：1px 细描边（#E2E8F0）+ 白底 + 圆角 10px，聚焦时主题色
+ *         描边 + 极淡主题色光环 —— 不再是粗灰线。
+ * 按钮：取消 = ghost（无边框、hover 浅底）；确定 = 主题色实心胶囊，
+ *       按下有 1px 下沉反馈；禁用态降透明度。
  * ============================================================ */
 
 function Overlay({ children }: { children: React.ReactNode }) {
   return (
     <div className="dialog-overlay" onMouseDown={(e) => e.stopPropagation()}>
-      <div className="dialog-panel">{children}</div>
+      <div className="dialog-panel dlg-panel">{children}</div>
     </div>
   );
 }
@@ -33,7 +40,12 @@ export function ConfirmDialog({
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCancel();
-      if (e.key === "Enter") onConfirm();
+      // 焦点在按钮上时把 Enter 交给按钮自己的默认行为（否则「取消」按钮也会确认）
+      if (e.key === "Enter") {
+        const el = document.activeElement;
+        if (el instanceof HTMLButtonElement) return;
+        onConfirm();
+      }
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
@@ -41,14 +53,16 @@ export function ConfirmDialog({
 
   return (
     <Overlay>
-      <div className="dialog-title">{title}</div>
-      <div className="dialog-message">{message}</div>
-      <div className="dialog-actions">
-        <button className="btn" onClick={onCancel}>
+      <div className="dlg-title">{title}</div>
+      <div className="dlg-message">{message}</div>
+      <div className="dlg-actions">
+        <button className="dlg-btn dlg-cancel" onClick={onCancel}>
           {cancelText}
         </button>
         <button
-          className={"btn" + (danger ? " btn-danger" : " btn-primary")}
+          className={
+            "dlg-btn " + (danger ? "dlg-confirm is-danger" : "dlg-confirm")
+          }
           onClick={onConfirm}
         >
           {confirmText}
@@ -62,12 +76,19 @@ export function InputDialog({
   title,
   initial,
   placeholder = "",
+  hint = "",
+  confirmText = "确定",
+  cancelText = "取消",
   onConfirm,
   onCancel,
 }: {
   title: string;
   initial: string;
   placeholder?: string;
+  /** 输入框下方的一行说明（可选） */
+  hint?: string;
+  confirmText?: string;
+  cancelText?: string;
   onConfirm: (value: string) => void;
   onCancel: () => void;
 }) {
@@ -83,32 +104,41 @@ export function InputDialog({
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCancel();
-      if (e.key === "Enter" && value.trim()) onConfirm(value.trim());
+      if (e.key === "Enter" && value.trim()) {
+        // 焦点在按钮上时让按钮自己处理（避免在「取消」上按回车却创建笔记）
+        const el = document.activeElement;
+        if (el instanceof HTMLButtonElement) return;
+        onConfirm(value.trim());
+      }
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [onCancel, onConfirm, value]);
 
+  const empty = !value.trim();
+
   return (
     <Overlay>
-      <div className="dialog-title">{title}</div>
+      <div className="dlg-title">{title}</div>
       <input
         ref={inputRef}
-        className="dialog-input"
+        className="dlg-input"
         value={value}
         placeholder={placeholder}
+        spellCheck={false}
         onChange={(e) => setValue(e.target.value)}
       />
-      <div className="dialog-actions">
-        <button className="btn" onClick={onCancel}>
-          取消
+      {hint && <div className="dlg-hint">{hint}</div>}
+      <div className="dlg-actions">
+        <button className="dlg-btn dlg-cancel" onClick={onCancel}>
+          {cancelText}
         </button>
         <button
-          className="btn btn-primary"
-          disabled={!value.trim()}
-          onClick={() => value.trim() && onConfirm(value.trim())}
+          className="dlg-btn dlg-confirm"
+          disabled={empty}
+          onClick={() => !empty && onConfirm(value.trim())}
         >
-          确定
+          {confirmText}
         </button>
       </div>
     </Overlay>

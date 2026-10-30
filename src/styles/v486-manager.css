@@ -1,0 +1,114 @@
+/* ============================================================
+   轻提词 V4.8.6 · 侧栏 ↔ 管理台转场（第四轮 · 用户要求的统一方案）
+   ------------------------------------------------------------
+   两个方向用同一套最简单的「展开 / 收起 + 内容淡入淡出」：
+     · 打开：管理台面板从右边缘零宽展开到全宽（clip-path），内容跟着淡入；
+     · 收起：内容先淡出，面板再收回右边缘零宽，收完才卸载。
+
+   为什么这样最稳：
+     1. 首帧 / 末帧的可见宽度都是 0 —— 0ms 不会把侧栏内容整块换掉，
+        卸载那一帧管理台本来就已经「看不见」，所以两端都不会闪；
+     2. 不再有逐张卡片的 FLIP / 缩放（管理台 40 张卡里只有十来张能和
+        侧栏里的卡片对上，逐张飞必然「满屏乱飞」）；
+     3. 面板内部各块（左侧分类栏 / 顶部标题 / 卡片）的入场动画全部关掉，
+        内容只由 .fm-body 统一淡入一次，不会出现「刷新一下」的错觉；
+     4. 不做任何 getBoundingClientRect 坐标换算，天然不受 UI 缩放影响；
+     5. prefers-reduced-motion 下全部关闭（FileManager 里直接立即卸载）。
+   ============================================================ */
+
+/* 内部元素不再各自进场：内容统一由 .fm-body 淡入 */
+.fm-wall .ns-card,
+.fm-wall .ns-card.is-fresh,
+.fm-wall .ns-card.is-launching,
+.fm-layer .fm-rail,
+.fm-layer .fm-manager-head {
+  animation: none !important;
+}
+
+/* 打开：从右边缘零宽展开到全宽（与收起用同一条曲线，严格互逆） */
+.fm-shell {
+  animation: fm486-expand 0.34s cubic-bezier(0.4, 0, 0.2, 1) both;
+  will-change: clip-path;
+}
+
+@keyframes fm486-expand {
+  0% {
+    clip-path: inset(0 0 0 100%);
+  }
+  100% {
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+/* 内容淡入：展开起步后再淡入，展开到位时内容已经清晰 */
+.fm-layer .fm-body {
+  animation: fm486-content-in 0.22s cubic-bezier(0.4, 0, 0.2, 1) 0.08s both;
+}
+
+@keyframes fm486-content-in {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+/* 收起：面板立刻收回右边缘，内容在同一段时间里淡出（与打开严格互逆） */
+.fm-layer.is-closing .fm-shell {
+  animation: fm486-collapse 0.34s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.fm-layer.is-closing .fm-body {
+  animation: fm486-content-out 0.22s cubic-bezier(0.4, 0, 0.2, 1) 0.02s both;
+  transition: none;
+}
+
+@keyframes fm486-collapse {
+  0% {
+    clip-path: inset(0 0 0 0);
+  }
+  100% {
+    clip-path: inset(0 0 0 100%);
+  }
+}
+
+@keyframes fm486-content-out {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* 左侧分类栏不参与淡出（它跟着 .fm-body 一起走，这里只防 styles.css 的旧规则） */
+.fm-layer.is-closing .fm-rail {
+  opacity: 1;
+}
+
+/* 顶栏笔记名：纯透明度过渡让位 / 回来 */
+.titlebar-center {
+  transition: opacity 0.18s var(--ease-out-cubic);
+}
+
+.app-root.manager-open .titlebar-center {
+  visibility: visible;
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fm-layer .fm-shell,
+  .fm-layer.is-closing .fm-shell,
+  .fm-layer .fm-body,
+  .fm-layer.is-closing .fm-body,
+  .fm-wall .ns-card {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  /* 关掉动画后管理台必须立即可见，否则会是一片空白 */
+  .fm-shell {
+    clip-path: none !important;
+  }
+}
