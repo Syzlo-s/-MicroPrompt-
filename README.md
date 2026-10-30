@@ -2,25 +2,21 @@
 
 Tauri 2 + React 19 + TypeScript + Vite 桌面速记应用（Web 技术栈迁移版）。
 
-## 📸 界面预览（v4.8.6 实机截图）
+## 界面预览
 
-> 以下均为安装版真机运行截图（Windows 11 / WebView2，窗口 1096×696），非设计稿。
+![主页面](docs/screenshots/01-home.png)
 
-| 主界面：笔记侧栏（最近打开 + 笔记列表）+ 编辑器 | 文件管理台（Ctrl+K）：分类栏 + 整屏卡片墙 |
-|---|---|
-| ![主界面](docs/screenshots/01-main.png) | ![文件管理台](docs/screenshots/02-manager.png) |
+![提示词润色](docs/screenshots/02-ai-polish.png)
 
-**新建笔记**：命名框只留一条主题色细边（4.8.6 去掉外层灰框）
+![侧边栏](docs/screenshots/03-sidebar.png)
 
-![新建笔记](docs/screenshots/03-new-note.png)
+![笔记管理台](docs/screenshots/04-manager.png)
 
-**待办方框（4.8.6 新增）**：选中文字后插入在文字前面；点击方框即勾选，勾选态为主题色纯色填充、无对勾图标
+![工具栏](docs/screenshots/05-toolbar.png)
 
-![待办方框](docs/screenshots/04-todo-box.png)
+![AI 润色设置](docs/screenshots/06-ai-settings.png)
 
-**设置**：用户 / 显示 / AI 助手 / 页面设置 / 存储 / 关于
-
-![设置](docs/screenshots/05-settings.png)
+![设置](docs/screenshots/07-settings.png)
 
 ## 🚀 10 分钟极速复现指南（评审快速上手）
 
