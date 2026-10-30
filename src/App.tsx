@@ -7,6 +7,7 @@ import LoginScreen from "./components/LoginScreen";
 import WelcomeScreen from "./components/WelcomeScreen";
 import ToastHost from "./components/ToastHost";
 import FileManager from "./components/FileManager";
+import NotesSidebar from "./components/NotesSidebar";
 
 /** UI 缩放：小 / 中 / 大 */
 const UI_ZOOMS = [1, 1.15, 1.3];
@@ -27,6 +28,10 @@ export default function App() {
   const notesManagerOpen = useStore((s) => s.notesManagerOpen);
   const openNotesManager = useStore((s) => s.openNotesManager);
   const closeNotesManager = useStore((s) => s.closeNotesManager);
+  const notesSidebarOpen = useStore((s) => s.notesSidebarOpen);
+  const toggleNotesSidebar = useStore((s) => s.toggleNotesSidebar);
+  const closeNotesSidebar = useStore((s) => s.closeNotesSidebar);
+  const refreshAutoCategories = useStore((s) => s.refreshAutoCategories);
   const bg = eyeCare ? "#FFF8E7" : "#FFFFFF";
 
   const rootRef = useRef<HTMLDivElement>(null);
@@ -40,6 +45,12 @@ export default function App() {
   useEffect(() => {
     void init();
   }, [init]);
+
+  // 4.8.5：自动分类（灰度提示词）定时刷新——开着软件跨过 15 天阈值也能及时归档
+  useEffect(() => {
+    const timer = window.setInterval(() => refreshAutoCategories(), 30 * 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, [refreshAutoCategories]);
 
   useEffect(() => {
     applyTheme(themeColor);
@@ -84,6 +95,30 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [openNotesManager]);
 
+  // 全局快捷键：Ctrl/Cmd + Shift + B 开合右侧笔记侧栏
+  // （不用 Ctrl+B：那是编辑器的加粗，不能抢）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || !e.shiftKey) return;
+      if (e.key.toLowerCase() !== "b") return;
+      const s = useStore.getState();
+      if (!s.authToken) return;
+      // 管理台 / 设置 / 会员弹窗在上层时，不抢它们的键盘操作
+      if (s.notesManagerOpen || s.settingsOpen || s.memberOpen) return;
+      e.preventDefault();
+      const willOpen = !s.notesSidebarOpen;
+      toggleNotesSidebar();
+      // 快捷键打开时把焦点交给侧栏列表：↑↓ 直接走位，Esc 直接收起
+      if (willOpen) {
+        window.setTimeout(() => {
+          document.querySelector<HTMLElement>(".ns-grid")?.focus();
+        }, 80);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [toggleNotesSidebar]);
+
   if (!authReady) {
     return <div className="auth-loading">加载中…</div>;
   }
@@ -103,17 +138,36 @@ export default function App() {
           zoomRef.current = z;
         }
       }}
-      className="app-root"
+      className={
+        "app-root" +
+        (notesSidebarOpen ? " sidebar-open" : "") +
+        (notesManagerOpen ? " manager-open" : "")
+      }
       style={{ background: bg }}
     >
       <TitleBar />
-      <div className="app-body" style={{ background: bg }}>
-        <EditorArea />
+      <div
+        className={"app-body" + (notesSidebarOpen ? " sidebar-open" : "")}
+        style={{ background: bg }}
+      >
+        <div className={"workspace" + (notesSidebarOpen ? " sidebar-open" : "")}>
+          <EditorArea />
+          {/* 窄窗时侧栏是浮层：点编辑区任意位置收起 */}
+          <div
+            className={"sb-scrim" + (notesSidebarOpen ? " show" : "")}
+            aria-hidden="true"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              closeNotesSidebar();
+            }}
+          />
+          <NotesSidebar open={notesSidebarOpen} />
+          {/* 文件管理台（4.8.3）：从侧栏「管理」或 Ctrl+K 打开，整页铺满（顶部只留头像与窗口按钮） */}
+          {notesManagerOpen && <FileManager onClose={closeNotesManager} />}
+        </div>
         <BottomDock />
       </div>
       {!welcomeDone && <WelcomeScreen />}
-      {/* 文件管理台（4.6.0）：Ctrl+K 或右下角抽屉里的「管理」入口打开 */}
-      {notesManagerOpen && <FileManager onClose={closeNotesManager} />}
       <ToastHost />
     </div>
   );

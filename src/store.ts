@@ -2,8 +2,37 @@ import { create } from "zustand";
 import type { AppData, Note } from "./types";
 import * as backend from "./backend";
 import { nowLocal, uid } from "./utils";
+import { loadLastOpened, markNoteOpened } from "./utils/noteOrder";
+import {
+  GRAY_CATEGORY,
+  isStaleNote,
+  loadCategories,
+  normalizeCategoryName,
+  saveCategories,
+} from "./utils/noteCategories";
 import type { AuthUser } from "./services/auth";
 import { fetchQuota, isLocalAccount, AiError, type AiQuota, type AiErrorCode } from "./services/ai";
+
+/** 去掉分类字段（「未分类」用字段缺失表示，保持旧数据 / 旧版本读取兼容） */
+const stripCategory = (n: Note): Note => {
+  const rest = { ...n };
+  delete rest.category;
+  return rest;
+};
+
+/** 与文件管理台内部过滤键同名的分类名：一律不允许用户创建（否则合集路由会串） */
+const RESERVED_CATEGORY_KEYS = new Set([
+  "all",
+  "pinned",
+  "uncategorized",
+  "gray",
+  "today",
+  "week",
+  "older",
+  "c0",
+  "c1",
+  "c2",
+]);
 
 /* ---------------- 登录态本地持久化 ---------------- */
 const AUTH_TOKEN_KEY = "microprompt.authToken";
@@ -189,6 +218,32 @@ const loadWelcomeDone = (): boolean => {
   }
 };
 
+/** 右侧笔记侧栏：记住用户上次选择；第一次在宽屏默认展开，窄窗默认收起 */
+const SIDEBAR_KEY = "microprompt.notesSidebarOpen";
+const isNarrowViewport = (): boolean => {
+  try {
+    return window.matchMedia("(max-width: 860px)").matches;
+  } catch {
+    return false;
+  }
+};
+const loadSidebarOpen = (): boolean => {
+  try {
+    if (isNarrowViewport()) return false;
+    const v = localStorage.getItem(SIDEBAR_KEY);
+    return v === null ? true : v === "1";
+  } catch {
+    return !isNarrowViewport();
+  }
+};
+const saveSidebarOpen = (open: boolean): void => {
+  try {
+    localStorage.setItem(SIDEBAR_KEY, open ? "1" : "0");
+  } catch {
+    /* 隐私模式等写不进去时忽略，只影响记忆 */
+  }
+};
+
 /** 可选软件主题色（--brand-rgb 用 "r, g, b" 形式） */
 export const THEMES: {
   key: string;
@@ -269,6 +324,10 @@ interface StoreState {
   storageBusy: boolean;
   /** 文件管理台（4.6.0）是否打开 */
   notesManagerOpen: boolean;
+  /** 右侧笔记侧栏是否展开（4.8.0：替代原底部气泡抽屉） */
+  notesSidebarOpen: boolean;
+  /** 用户自选分类（不含系统自动分类「灰度提示词」），持久化到 localStorage */
+  noteCategories: string[];
   /** 是否已看过首次欢迎页 */
   welcomeDone: boolean;
   notes: Note[];
@@ -323,7 +382,7 @@ interface StoreState {
   rename: (id: string, title: string) => void;
   setColor: (id: string, color: number) => void;
   setBackground: (id: string, background: number) => void;
-  createNote: () => Promise<void>;
+  createNote: (title?: string) => Promise<void>;
   removeNote: (id: string) => Promise<void>;
   setRefblock: (uuid: string, code: string) => void;
   removeRefblock: (uuid: string) => void;
@@ -356,6 +415,10 @@ interface StoreState {
   /** 打开 / 关闭文件管理台 */
   openNotesManager: () => void;
   closeNotesManager: () => void;
+  /** 右侧笔记侧栏：开 / 关 / 切换 */
+  openNotesSidebar: () => void;
+  closeNotesSidebar: () => void;
+  toggleNotesSidebar: () => void;
   /** 重新读取存储信息（打开设置 / 切换位置后调用） */
   refreshStorage: () => Promise<void>;
   /** 切换笔记保存位置：moveData = 把现有笔记一起搬过去 */
@@ -371,6 +434,13 @@ interface StoreState {
   reloadData: () => Promise<void>;
   /** 单条置顶 / 取消置顶 */
   setNotePinned: (id: string, v: boolean) => void;
+  /** 4.8.5：新建 / 删除用户分类 */
+  addNoteCategory: (name: string) => void;
+  removeNoteCategory: (name: string) => void;
+  /** 4.8.5：把单条笔记移动到某个分类；null = 未分类 */
+  setNoteCategory: (id: string, category: string | null) => void;
+  /** 4.8.5：按活跃度自动分类（>15 天未打开的移入「灰度提示词」，重新活跃的移回未分类） */
+  refreshAutoCategories: () => void;
   /** 批量置顶 */
   setNotesPinned: (ids: string[], v: boolean) => void;
   /** 批量改颜色 */
@@ -462,6 +532,8 @@ export const useStore = create<StoreState>((set, get) => {
     storage: null,
     storageBusy: false,
     notesManagerOpen: false,
+    notesSidebarOpen: loadSidebarOpen(),
+    noteCategories: loadCategories(),
     welcomeDone: loadWelcomeDone(),
     notes: [],
     refblocks: {},
@@ -495,6 +567,9 @@ export const useStore = create<StoreState>((set, get) => {
         console.error("[load] 加载失败:", e);
       }
       set({ notes: data.notes, refblocks: data.refblocks, loaded: true });
+
+      // 4.8.5：启动时按活跃度刷一次自动分类（灰度提示词）
+      get().refreshAutoCategories();
 
       try {
         const dir = await backend.getDataDir();
@@ -607,7 +682,10 @@ export const useStore = create<StoreState>((set, get) => {
     select: async (id: string) => {
       if (get().currentId === id) return;
       await get().flushSave();
+      // 4.8.5：先记下「刚打开过」，灰度笔记才能立刻移回未分类
+      markNoteOpened(id);
       set({ currentId: id });
+      get().refreshAutoCategories();
     },
 
     updateContent: (id: string, content: string) => {
@@ -644,11 +722,11 @@ export const useStore = create<StoreState>((set, get) => {
       scheduleSave();
     },
 
-    createNote: async () => {
+    createNote: async (title?: string) => {
       const now = nowLocal();
       const note: Note = {
         id: uid(),
-        title: "新建笔记",
+        title: (title ?? "").trim() || "新建笔记",
         content: "",
         background: 0,
         color: 0,
@@ -857,8 +935,28 @@ export const useStore = create<StoreState>((set, get) => {
 
     /* ---------------- 文件管理台 / 存储位置（4.6.0） ---------------- */
 
-    openNotesManager: () => set({ notesManagerOpen: true }),
+    openNotesManager: () => {
+      set({ notesManagerOpen: true });
+      // 打开管理台时刷一次自动分类，保证「灰度提示词」数量是最新的
+      get().refreshAutoCategories();
+    },
     closeNotesManager: () => set({ notesManagerOpen: false }),
+
+    /* ---------------- 右侧笔记侧栏（4.8.0） ---------------- */
+
+    openNotesSidebar: () => {
+      saveSidebarOpen(true);
+      set({ notesSidebarOpen: true });
+    },
+    closeNotesSidebar: () => {
+      saveSidebarOpen(false);
+      set({ notesSidebarOpen: false });
+    },
+    toggleNotesSidebar: () => {
+      const v = !get().notesSidebarOpen;
+      saveSidebarOpen(v);
+      set({ notesSidebarOpen: v });
+    },
 
     refreshStorage: async () => {
       try {
@@ -917,6 +1015,81 @@ export const useStore = create<StoreState>((set, get) => {
       if (!note || Boolean(note.pinned) === v) return;
       patchNote(id, { pinned: v, modified: nowLocal() });
       set((s) => ({ rev: s.rev + 1 }));
+      scheduleSave();
+    },
+
+    /* ---------------- 分类 / 自动归档（4.8.5） ---------------- */
+
+    addNoteCategory: (name: string) => {
+      const n = normalizeCategoryName(name);
+      // 过滤空名 / 系统保留分类 / 与内部过滤键撞名的分类，避免合集路由歧义
+      if (!n || n === GRAY_CATEGORY) return;
+      if (RESERVED_CATEGORY_KEYS.has(n)) return;
+      const list = get().noteCategories;
+      if (list.includes(n)) return;
+      const next = [...list, n];
+      saveCategories(next);
+      set({ noteCategories: next });
+    },
+
+    removeNoteCategory: (name: string) => {
+      const target = normalizeCategoryName(name);
+      if (!target) return;
+      const next = get().noteCategories.filter((x) => x !== target);
+      saveCategories(next);
+      set((s) => ({
+        noteCategories: next,
+        notes: s.notes.map((n) =>
+          normalizeCategoryName(n.category ?? "") === target
+            ? stripCategory(n)
+            : n,
+        ),
+        rev: s.rev + 1,
+      }));
+      scheduleSave();
+    },
+
+    setNoteCategory: (id: string, category: string | null) => {
+      const note = get().notes.find((n) => n.id === id);
+      if (!note) return;
+      const name = normalizeCategoryName(category ?? "");
+      const cur = normalizeCategoryName(note.category ?? "");
+      if (name === cur) return;
+      // 用户新建的分类自动登记到分类列表（系统保留名不登记）
+      if (name && name !== GRAY_CATEGORY) get().addNoteCategory(name);
+      set((s) => ({
+        notes: s.notes.map((n) => {
+          if (n.id !== id) return n;
+          return name ? { ...n, category: name, modified: nowLocal() } : stripCategory(n);
+        }),
+        rev: s.rev + 1,
+      }));
+      scheduleSave();
+    },
+
+    refreshAutoCategories: () => {
+      const now = Date.now();
+      const openedAt = loadLastOpened();
+      let changed = false;
+      const notes = get().notes.map((n) => {
+        const cat = normalizeCategoryName(n.category ?? "");
+        if (cat === GRAY_CATEGORY) {
+          // 重新活跃（打开 / 编辑 / 创建）或被置顶 → 自动移回未分类
+          if (n.pinned || !isStaleNote(n, openedAt, now)) {
+            changed = true;
+            return stripCategory(n);
+          }
+          return n;
+        }
+        // 只在「未分类」里自动归档：用户手动选过分类的笔记尊重用户选择
+        if (!cat && isStaleNote(n, openedAt, now)) {
+          changed = true;
+          return { ...n, category: GRAY_CATEGORY };
+        }
+        return n;
+      });
+      if (!changed) return;
+      set((s) => ({ notes, rev: s.rev + 1 }));
       scheduleSave();
     },
 

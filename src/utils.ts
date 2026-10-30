@@ -1,5 +1,5 @@
-/** 头像文件大小上限：2MB */
-export const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
+/** 头像文件大小上限：小于 25MB（判断用 > 拒绝，即 ≤25MB 通过） */
+export const MAX_AVATAR_BYTES = 25 * 1024 * 1024;
 
 const pad2 = (n: number): string => (n < 10 ? "0" : "") + n;
 
@@ -29,6 +29,8 @@ export function clamp(v: number, lo: number, hi: number): number {
 /**
  * 读取图片文件并压缩为头像 data URL（≤ max 边长，JPEG），
  * 避免原图过大导致 localStorage 写入失败（头像丢失）。
+ * 说明（4.8.6）：头像最终只显示在设置页 46px / 顶栏 22px，
+ * 256 在 2× 高分屏下仍有≈2.8 倍余量；再放大只白占 localStorage，故保持 256。
  */
 export function fileToAvatarDataUrl(file: File, max = 256): Promise<string> {
   return new Promise((resolve, reject) => {

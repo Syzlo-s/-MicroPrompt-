@@ -1,0 +1,678 @@
+/* ============================================================
+   轻提词 V4.8.6 · 笔记侧栏分类导航 + 最近打开（item 4 / item 5）
+   ------------------------------------------------------------
+   结构（自上而下）：
+     ns-head    标题 / 条数 / 搜索
+     ns-nav     分类列表：【全部笔记】全部 / 置顶 / 今天（同一行 3 个 chip）
+                  【按颜色】黑色 / 蓝色 / 红色（同一行 3 个 chip）
+                  【我的合集】未分类合集 / 各用户分类 / ＋新建分类合集（chip 换行）
+     ns-grid    当前分类的卡片墙（唯一滚动区）；最上面一行是「最近打开」
+                  快捷卡片（最后打开的那 1 篇，点开即打开；下面列表不重排）
+     ns-gray    灰度提示词（侧栏最下方，常驻，像回收站但不删文件）
+     ns-toolbar 底部悬浮工具栏（与编辑区工具栏同款）
+   颜色走主题变量，护眼模式跟随；prefers-reduced-motion 下不动画。
+
+   布局关键：
+   1) 导航用紧凑 chip（26px）代替整行列表，默认窗口（696px 高）导航约
+      190px，不会出现滚动条；卡片墙因此拿到约 270px，能看到 2 行以上。
+   2) 「最近打开」占卡片墙内部一行（30px，随列表滚动），不额外吃布局高度。
+   3) 底栏那 67px 让出来给悬浮工具栏，灰度页脚贴在工具栏上沿。
+   4) 导航只在窗口过矮（<560px）或合集特别多时自己滚。
+   ============================================================ */
+
+/* ---------------- 1. 布局：导航 / 卡片墙 / 灰度页脚 ---------------- */
+
+.notes-sidebar .ns-panel {
+  /* 底部悬浮工具栏独占一条（19px 下边距 + 42px 高 + 6px 间隙） */
+  padding-bottom: 67px;
+}
+
+.notes-sidebar .ns-grid {
+  flex: 1 1 0;
+  min-height: 124px;
+  /* 工具栏不再压住卡片，底部只留一点呼吸位 */
+  padding: 2px 12px 10px;
+}
+
+.notes-sidebar .ns-empty {
+  min-height: 160px;
+  padding: 22px 16px 18px;
+}
+
+/* ---------------- 1b. 最近打开：卡片墙上沿的快捷入口（最近 2 篇） ---------------- */
+
+/* 它不是分类筛选，也不是把列表搬过来 —— 只固定显示「最近打开的 2 篇」，
+   点哪条就打开哪篇；下面列表里的原卡片位置不变（顺序走展开快照）。
+   放在滚动区外、卡片墙上方：列表怎么滚它都在，不会被滚走。 */
+.notes-sidebar .ns-recent-list {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0 12px 3px;
+  padding: 6px 7px 7px;
+  border: 1px solid rgba(var(--brand-rgb), 0.14);
+  border-radius: 11px;
+  background: rgba(var(--brand-rgb), 0.045);
+}
+
+.notes-sidebar .ns-recent-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 0 3px 1px;
+  color: var(--c-brand-strong);
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+
+.notes-sidebar .ns-recent-head svg {
+  opacity: 0.85;
+}
+
+.notes-sidebar .ns-recent-slot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 28px;
+  margin: 0;
+  padding: 0 8px;
+  border: 1px dashed rgba(var(--brand-rgb), 0.38);
+  border-radius: 8px;
+  background:
+    linear-gradient(rgba(var(--brand-rgb), 0.03), rgba(var(--brand-rgb), 0.03)),
+    var(--c-panel);
+  color: var(--c-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 0.16s,
+    border-color 0.16s,
+    box-shadow 0.16s;
+}
+
+/* 最新那一条（列表第一行）：边框实一点，方便一眼分出主次 */
+.notes-sidebar .ns-recent-slot[data-recent-index="0"] {
+  border-style: solid;
+  border-color: rgba(var(--brand-rgb), 0.3);
+}
+
+.notes-sidebar .ns-recent-slot:hover {
+  background:
+    linear-gradient(rgba(var(--brand-rgb), 0.1), rgba(var(--brand-rgb), 0.1)),
+    var(--c-panel);
+  border-color: rgba(var(--brand-rgb), 0.55);
+}
+
+.notes-sidebar .ns-recent-slot:active {
+  transform: translateY(0.5px);
+}
+
+.notes-sidebar .ns-recent-slot:focus-visible {
+  outline: 2px solid rgba(var(--brand-rgb), 0.42);
+  outline-offset: 1px;
+}
+
+.notes-sidebar .ns-recent-slot.is-current {
+  border-style: solid;
+  border-color: rgba(var(--brand-rgb), 0.5);
+  background:
+    linear-gradient(rgba(var(--brand-rgb), 0.1), rgba(var(--brand-rgb), 0.1)),
+    var(--c-panel);
+}
+
+.notes-sidebar .ns-recent-slot.is-launching {
+  animation: ns-recent-pop 0.26s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes ns-recent-pop {
+  from {
+    transform: scale(0.985);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+.notes-sidebar .ns-recent-slot-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.14);
+}
+
+.notes-sidebar .ns-recent-slot-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11.5px;
+  line-height: 1;
+}
+
+.notes-sidebar .ns-recent-slot-index {
+  flex: none;
+  color: var(--c-text-3, rgba(15, 23, 42, 0.45));
+  font-size: 10px;
+  line-height: 1;
+}
+
+.ns-paper .ns-recent-list {
+  border-color: #e3d6bb;
+  background: rgba(180, 150, 90, 0.06);
+}
+
+.ns-paper .ns-recent-slot {
+  border-color: #e3d6bb;
+  background: linear-gradient(#fffdf6, #fff9ea);
+}
+
+/* ---------------- 2. 分类导航：紧凑 chip ---------------- */
+
+.notes-sidebar .ns-nav {
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 1px 10px 4px;
+  overflow: hidden auto;
+  scrollbar-width: thin;
+  scrollbar-color: #64748b29 transparent;
+}
+
+.notes-sidebar .ns-nav::-webkit-scrollbar {
+  width: 6px;
+}
+
+.notes-sidebar .ns-nav::-webkit-scrollbar-track {
+  background: 0 0;
+}
+
+.notes-sidebar .ns-nav::-webkit-scrollbar-thumb {
+  background: #64748b29;
+  border-radius: 3px;
+}
+
+.notes-sidebar .ns-nav:hover::-webkit-scrollbar-thumb {
+  background: #64748b47;
+}
+
+/* 最近打开：顶部独立整行（时钟图标 + 名称 + 数量），与分组标题明显区分 */
+.ns-nav-recent {
+  width: 100%;
+  height: 30px;
+  flex: none;
+  margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 8px;
+  border: 1px solid rgba(var(--brand-rgb), .16);
+  border-radius: 11px;
+  background: rgba(var(--brand-rgb), .06);
+  color: var(--c-brand-strong);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color .16s var(--ease-out-cubic),
+    border-color .16s var(--ease-out-cubic),
+    color .16s var(--ease-out-cubic);
+}
+
+.ns-nav-recent:hover {
+  background: rgba(var(--brand-rgb), .1);
+  border-color: rgba(var(--brand-rgb), .24);
+  color: var(--c-brand-strong);
+}
+
+.ns-nav-recent:active {
+  background: rgba(var(--brand-rgb), .14);
+}
+
+.ns-nav-recent.on {
+  background: rgba(var(--brand-rgb), .13);
+  border-color: rgba(var(--brand-rgb), .3);
+  color: var(--c-brand-strong);
+}
+
+.ns-nav-recent .ns-nav-ico {
+  color: var(--c-brand);
+}
+
+.ns-nav-recent:focus-visible,
+.ns-nav-item:focus-visible {
+  outline: 2px solid rgba(var(--brand-rgb), .35);
+  outline-offset: -2px;
+}
+
+/* 分组：小标题（10px 大写感）+ 一行 chip 或换行 chip */
+.ns-nav-group {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin-top: 6px;
+}
+
+.ns-nav-label {
+  height: 16px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+  margin-bottom: 3px;
+  color: var(--c-text-aux);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  letter-spacing: .08em;
+}
+
+.ns-nav-items {
+  flex: none;
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* 全部笔记 / 按颜色：同一行 3 个等宽 chip */
+.ns-nav-items.is-row {
+  flex-wrap: nowrap;
+}
+
+/* 我的合集：chip 自动换行（每行 2-3 个） */
+.ns-nav-items.is-wrap {
+  flex-wrap: wrap;
+}
+
+/* chip 本体：高度 26px、圆角 9px、主题色淡底选中 */
+.ns-nav-item {
+  height: 26px;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 5px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--c-text-sub);
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 400;
+  line-height: 1;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color .16s var(--ease-out-cubic),
+    border-color .16s var(--ease-out-cubic),
+    color .16s var(--ease-out-cubic);
+}
+
+/* 换行区里的 chip 按内容自适应宽度；单枚不超过 1/3 行宽，
+   保证一行最多 3 个 —— 3 个用户合集时「未分类 + 合集 + ＋新建」稳定两行
+   （-10px 留出 2px 亚像素余量，避免边界上意外换行） */
+.ns-nav-items.is-wrap .ns-nav-item {
+  flex: 0 1 auto;
+  max-width: calc((100% - 10px) / 3);
+}
+
+/* 固定一行时内容居中，换行时左对齐 */
+.ns-nav-items.is-row .ns-nav-item {
+  justify-content: center;
+}
+
+.ns-nav-items.is-wrap .ns-nav-item {
+  justify-content: flex-start;
+}
+
+.ns-nav-item:hover {
+  background: var(--c-hover);
+  color: var(--c-text);
+}
+
+.ns-nav-item:active {
+  background: rgba(var(--brand-rgb), .12);
+}
+
+.ns-nav-item.on {
+  background: rgba(var(--brand-rgb), .1);
+  color: var(--c-brand-strong);
+  font-weight: 600;
+}
+
+.ns-nav-item.on:hover {
+  background: rgba(var(--brand-rgb), .13);
+}
+
+/* 小图标列：固定 12px，颜色圆点也占同样宽度，保证 chip 内文字对齐 */
+.ns-nav-ico {
+  flex: none;
+  width: 12px;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  color: #9aa6b8;
+  transition: color .16s var(--ease-out-cubic);
+}
+
+/* 最近打开整行稍大一点，图标列回到 14px（与 14px 时钟对齐） */
+.ns-nav-recent .ns-nav-ico {
+  width: 14px;
+}
+
+.ns-nav-item:hover .ns-nav-ico {
+  color: var(--c-brand);
+}
+
+.ns-nav-item.on .ns-nav-ico {
+  color: var(--c-brand);
+}
+
+.ns-nav-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin: 0 2.5px;
+  border-radius: 50%;
+  opacity: .92;
+}
+
+.ns-nav-item.on .ns-nav-dot {
+  box-shadow: 0 0 0 2px rgba(var(--brand-rgb), .16);
+  opacity: 1;
+}
+
+.ns-nav-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 最近打开整行：名称撑满、数量靠右；chip 里名称按内容宽度 */
+.ns-nav-recent .ns-nav-name {
+  flex: 1;
+}
+
+.ns-nav-item .ns-nav-name {
+  flex: 0 1 auto;
+}
+
+.ns-nav-count {
+  flex: none;
+  min-width: 11px;
+  padding-left: 1px;
+  color: #a3adbd;
+  font-size: 9px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.ns-nav-item.on .ns-nav-count,
+.ns-nav-recent.on .ns-nav-count {
+  color: inherit;
+  opacity: .72;
+}
+
+/* 自动分类 / 新建入口 */
+.ns-nav-auto,
+.ns-gray-auto {
+  flex: none;
+  height: 14px;
+  padding: 0 4px;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  color: var(--c-brand-strong);
+  background: rgba(var(--brand-rgb), .08);
+  border: 1px solid rgba(var(--brand-rgb), .16);
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: .2px;
+}
+
+/* 「＋新建分类合集」：跟其他合集 chip 同尺寸，用虚线边提示这是操作项。
+   合集特别多、导航需要滚动时，它 sticky 在导航底部，保证始终可见。 */
+.ns-nav-new {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  color: var(--c-text-aux);
+  border-style: dashed;
+  border-color: rgba(148, 163, 184, .34);
+  background: linear-gradient(#fdfdff, #f8fafd);
+  box-shadow: 0 -5px 10px -8px rgba(15, 23, 42, .35);
+}
+
+.ns-nav-new:hover {
+  color: var(--c-brand-strong);
+  border-color: rgba(var(--brand-rgb), .34);
+}
+
+.ns-nav-new .ns-nav-ico {
+  opacity: .85;
+}
+
+/* 刚建好的分类：短暂主题色光圈，1.7s 后自然消失（不使用 fill，结束回到常态） */
+@keyframes ns-nav-fresh {
+  0% {
+    box-shadow:
+      0 0 0 1px rgba(var(--brand-rgb), .4),
+      0 0 0 5px rgba(var(--brand-rgb), .12);
+  }
+  to {
+    box-shadow:
+      0 0 0 1px rgba(var(--brand-rgb), 0),
+      0 0 0 5px rgba(var(--brand-rgb), 0);
+  }
+}
+
+.ns-nav-item.is-fresh {
+  animation: ns-nav-fresh 1.7s var(--ease-out-cubic);
+}
+
+/* ---------------- 3. 灰度提示词：常驻页脚 ---------------- */
+
+.notes-sidebar .ns-gray {
+  flex: none;
+  margin: 2px 10px 0;
+  padding-top: 5px;
+  border-top: 1px solid rgba(148, 163, 184, .16);
+}
+
+.ns-gray-btn {
+  width: 100%;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--c-text-sub);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color .16s var(--ease-out-cubic),
+    border-color .16s var(--ease-out-cubic),
+    color .16s var(--ease-out-cubic);
+}
+
+.ns-gray-btn:hover {
+  background: var(--c-hover);
+  color: var(--c-text);
+}
+
+.ns-gray-btn.on {
+  background: rgba(var(--brand-rgb), .1);
+  color: var(--c-brand-strong);
+  font-weight: 600;
+}
+
+.ns-gray-btn:focus-visible {
+  outline: 2px solid rgba(var(--brand-rgb), .35);
+  outline-offset: -2px;
+}
+
+.ns-gray-ico {
+  flex: none;
+  width: 14px;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  color: #9aa6b8;
+  transition: color .16s var(--ease-out-cubic);
+}
+
+.ns-gray-btn:hover .ns-gray-ico,
+.ns-gray-btn.on .ns-gray-ico {
+  color: var(--c-brand);
+}
+
+.ns-gray-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ns-gray-count {
+  flex: none;
+  min-width: 14px;
+  color: #a3adbd;
+  font-size: 9.5px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.ns-gray-btn.on .ns-gray-count {
+  color: inherit;
+  opacity: .72;
+}
+
+/* ---------------- 4. 护眼模式（纸张黄） ---------------- */
+
+.ns-paper .ns-nav-recent {
+  background: rgba(180, 150, 90, .12);
+  border-color: #e9dcc0;
+  color: var(--c-brand-strong);
+}
+
+.ns-paper .ns-nav-recent:hover {
+  background: rgba(180, 150, 90, .18);
+  border-color: #e2d2b2;
+}
+
+.ns-paper .ns-nav-recent.on {
+  background: rgba(180, 150, 90, .2);
+  border-color: #dcc9a4;
+}
+
+.ns-paper .ns-nav-item:hover,
+.ns-paper .ns-gray-btn:hover {
+  background: #f7f0df;
+  color: var(--c-text);
+}
+
+.ns-paper .ns-nav-item.on,
+.ns-paper .ns-gray-btn.on {
+  background: rgba(var(--brand-rgb), .1);
+  color: var(--c-brand-strong);
+}
+
+.ns-paper .ns-nav-new {
+  border-color: #e6d9bd;
+  background: linear-gradient(#fffdf6, #fff8e7);
+}
+
+.ns-paper .ns-gray {
+  border-top-color: #efe4cc;
+}
+
+/* ---------------- 5. 窗口过矮时：导航自己滚，卡片墙保底一行 ---------------- */
+
+@media (max-height: 560px) {
+  .notes-sidebar .ns-panel {
+    padding-bottom: 61px;
+  }
+
+  .notes-sidebar .ns-nav {
+    padding-top: 0;
+    padding-bottom: 2px;
+  }
+
+  .notes-sidebar .ns-nav-recent {
+    height: 28px;
+    margin-bottom: 2px;
+  }
+
+  .notes-sidebar .ns-nav-group {
+    margin-top: 4px;
+  }
+
+  .notes-sidebar .ns-nav-label {
+    height: 14px;
+    margin-bottom: 2px;
+    line-height: 14px;
+  }
+
+  .notes-sidebar .ns-nav-item {
+    height: 24px;
+  }
+
+  .notes-sidebar .ns-grid {
+    min-height: 108px;
+  }
+
+  .notes-sidebar .ns-recent-slot {
+    height: 27px;
+  }
+
+  .notes-sidebar .ns-empty {
+    min-height: 118px;
+    padding: 12px 14px;
+  }
+}
+
+/* ---------------- 6. 减少动态效果 ---------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .ns-recent-slot,
+  .ns-nav-recent,
+  .ns-nav-item,
+  .ns-nav-ico,
+  .ns-nav-dot,
+  .ns-gray-btn,
+  .ns-gray-ico {
+    transition: none !important;
+  }
+
+  .ns-recent-slot.is-launching,
+  .ns-nav-item.is-fresh {
+    animation: none !important;
+  }
+}

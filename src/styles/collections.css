@@ -1,0 +1,465 @@
+/* ============================================================
+   轻提词 V4.8.5 · 合集（手机应用抽屉式文件管理）+ 我的分类
+   ------------------------------------------------------------
+   只服务 FileManager 新增的两块界面：
+     · 左侧 rail：最上方「合集」入口 + 底部「我的分类」分组；
+     · 右侧：合集总览的文件夹网格，以及进入分类后的「‹ 合集」返回。
+   约定：
+     · 颜色一律走 styles.css 的主题变量 / rgba(var(--brand-rgb))，
+       不写死品牌色，护眼模式（.ns-paper）自动跟随；
+     · 圆角 11~14px、1px 细描边、极淡投影，和侧栏卡片同一族；
+     · hover / press 过渡 160~200ms OutCubic，出现 ≤280ms 淡入上浮，
+       返回时反向，成对设计；prefers-reduced-motion 下全部关闭。
+   ============================================================ */
+
+/* ---------------- 左侧：合集入口（在全部笔记之前，更突出） ---------------- */
+
+.fm-rail .fm-rail-collections {
+  margin-bottom: 12px;
+  padding: 7px 9px;
+  color: var(--c-brand-strong);
+  background: rgba(var(--brand-rgb), .07);
+  border: 1px solid rgba(var(--brand-rgb), .14);
+  font-weight: 600;
+  transition:
+    background-color .16s var(--ease-out-cubic),
+    border-color .16s var(--ease-out-cubic),
+    color .16s var(--ease-out-cubic),
+    transform .18s var(--ease-out-cubic);
+}
+
+.fm-rail .fm-rail-collections:hover {
+  color: var(--c-brand-strong);
+  background: rgba(var(--brand-rgb), .12);
+  border-color: rgba(var(--brand-rgb), .24);
+  transform: translateY(-1px);
+}
+
+.fm-rail .fm-rail-collections:active {
+  transform: translateY(0) scale(.985);
+}
+
+.fm-rail .fm-rail-collections.on {
+  color: var(--c-brand-strong);
+  background: rgba(var(--brand-rgb), .16);
+  border-color: rgba(var(--brand-rgb), .28);
+}
+
+.fm-rail .fm-rail-collections .fm-rail-ico {
+  color: var(--c-brand);
+  opacity: 1;
+}
+
+.fm-rail .fm-rail-arrow {
+  color: var(--c-brand);
+  flex: none;
+  margin-left: 2px;
+  font-size: 11px;
+  line-height: 1;
+  opacity: .75;
+  transition: transform .18s var(--ease-out-cubic);
+}
+
+.fm-rail .fm-rail-collections:hover .fm-rail-arrow,
+.fm-rail .fm-rail-collections.on .fm-rail-arrow {
+  transform: translateX(1px);
+  opacity: 1;
+}
+
+/* 4.8.5：我的分类分组里的小标记 / 新建入口 */
+
+.fm-rail .fm-rail-auto {
+  flex: none;
+  height: 14px;
+  padding: 0 4px;
+  color: var(--c-brand-strong);
+  background: rgba(var(--brand-rgb), .09);
+  border: 1px solid rgba(var(--brand-rgb), .16);
+  border-radius: 999px;
+  justify-content: center;
+  align-items: center;
+  font-size: 9px;
+  line-height: 1;
+  letter-spacing: .2px;
+  display: inline-flex;
+}
+
+.fm-rail .fm-rail-new {
+  color: var(--c-text-aux);
+  transition:
+    background-color .16s var(--ease-out-cubic),
+    color .16s var(--ease-out-cubic);
+}
+
+.fm-rail .fm-rail-new:hover {
+  color: var(--c-brand-strong);
+  background: var(--c-hover);
+}
+
+.fm-rail .fm-rail-new .fm-rail-ico {
+  opacity: .8;
+}
+
+/* ---------------- 右侧：合集总览 ---------------- */
+
+.fm-collections {
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  display: flex;
+  animation: fm-drawer-in .26s var(--ease-out-cubic) both;
+}
+
+/* 从文件夹返回：方向与进入分类相反，形成一对 */
+.fm-collections.is-back {
+  animation: fm-drawer-back .24s var(--ease-out-cubic) both;
+}
+
+@keyframes fm-drawer-in {
+  0% {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fm-drawer-back {
+  0% {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fm-manager-head.fm-collections-head {
+  gap: 9px;
+}
+
+.fm-collections-head .fm-manager-close {
+  margin-left: auto;
+}
+
+.fm-collections-sub {
+  color: var(--c-text-aux);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  margin-left: 2px;
+  font-size: 11px;
+  overflow: hidden;
+}
+
+/* 文件夹网格：手机应用抽屉；auto-fill 随窗口宽度自适应 */
+.fm-folders {
+  flex: 1;
+  min-height: 0;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  align-content: start;
+  gap: 13px;
+  padding: 18px 20px 96px;
+  display: grid;
+  overflow: hidden auto;
+}
+
+.fm-folders::-webkit-scrollbar {
+  width: 6px;
+}
+
+.fm-folders::-webkit-scrollbar-track {
+  background: 0 0;
+}
+
+.fm-folders::-webkit-scrollbar-thumb {
+  background: #64748b29;
+  border-radius: 3px;
+}
+
+.fm-folders:hover::-webkit-scrollbar-thumb {
+  background: #64748b47;
+}
+
+/* ---------------- 单个文件夹卡片 ---------------- */
+
+.fm-folder {
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+  min-height: 96px;
+  color: var(--c-text);
+  background: var(--c-panel);
+  border: 1px solid var(--c-border);
+  border-radius: 13px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 12px 12px 10px;
+  display: flex;
+  position: relative;
+  box-shadow: 0 8px 20px -16px rgba(var(--brand-rgb), .3);
+  transition:
+    transform .18s var(--ease-out-cubic),
+    box-shadow .18s var(--ease-out-cubic),
+    border-color .16s var(--ease-out-cubic),
+    background-color .16s var(--ease-out-cubic);
+  animation: fm-folder-in .24s var(--ease-out-cubic) backwards;
+  animation-delay: calc(var(--folder-i, 0) * 14ms);
+}
+
+.fm-folder:hover {
+  transform: translateY(-1px);
+  border-color: rgba(var(--brand-rgb), .26);
+  box-shadow: 0 12px 26px -18px rgba(var(--brand-rgb), .42);
+}
+
+.fm-folder:active {
+  transform: translateY(0) scale(.985);
+}
+
+.fm-folder:focus-visible {
+  outline: none;
+  border-color: rgba(var(--brand-rgb), .5);
+  box-shadow: 0 0 0 2px rgba(var(--brand-rgb), .16);
+}
+
+.fm-folder.on {
+  background: linear-gradient(180deg, rgba(var(--brand-rgb), .05), var(--c-panel) 72%);
+  border-color: rgba(var(--brand-rgb), .34);
+}
+
+/* 刚在合集里建好的分类：短暂描边高亮 */
+.fm-folder.is-fresh {
+  border-color: rgba(var(--brand-rgb), .42);
+  box-shadow: 0 0 0 2px rgba(var(--brand-rgb), .12);
+}
+
+@keyframes fm-folder-in {
+  0% {
+    opacity: 0;
+    transform: translateY(6px) scale(.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* 文件夹图标：手机 app 图标式的圆角色块 */
+.fm-folder-ico {
+  width: 34px;
+  height: 34px;
+  color: var(--c-brand);
+  background: rgba(var(--brand-rgb), .08);
+  border: 1px solid rgba(var(--brand-rgb), .1);
+  border-radius: 11px;
+  place-items: center;
+  flex: none;
+  margin-bottom: 5px;
+  transition:
+    background-color .16s var(--ease-out-cubic),
+    color .16s var(--ease-out-cubic);
+  display: grid;
+}
+
+.fm-folder:hover .fm-folder-ico {
+  background: rgba(var(--brand-rgb), .13);
+}
+
+.fm-folder-name {
+  width: 100%;
+  color: var(--c-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+}
+
+.fm-folder-count {
+  color: var(--c-text-aux);
+  font-variant-numeric: tabular-nums;
+  font-size: 10.5px;
+}
+
+/* 「自动」药丸：只给灰度提示词 */
+.fm-folder-auto {
+  height: 14px;
+  color: var(--c-brand-strong);
+  background: rgba(var(--brand-rgb), .09);
+  border: 1px solid rgba(var(--brand-rgb), .16);
+  border-radius: 999px;
+  justify-content: center;
+  align-items: center;
+  padding: 0 5px;
+  font-size: 9px;
+  line-height: 1;
+  letter-spacing: .2px;
+  display: inline-flex;
+  position: absolute;
+  top: 10px;
+  right: 10px;
+}
+
+/* 灰度提示词是自动归档：图标走中性色，和用户分类区分开 */
+.fm-folder[data-category="gray"] .fm-folder-ico {
+  color: var(--c-text-sub);
+  background: var(--c-border);
+  border-color: var(--c-border);
+}
+
+.fm-folder[data-category="gray"]:hover .fm-folder-ico {
+  color: var(--c-text);
+}
+
+/* 「＋ 新建分类」卡片：虚线描边，白底同族 */
+.fm-folder.is-new {
+  color: var(--c-text-sub);
+  background: var(--c-panel);
+  border-style: dashed;
+  border-color: rgba(var(--brand-rgb), .3);
+  box-shadow: none;
+}
+
+.fm-folder.is-new:hover {
+  color: var(--c-brand-strong);
+  border-color: rgba(var(--brand-rgb), .46);
+  background: rgba(var(--brand-rgb), .03);
+  box-shadow: 0 10px 22px -20px rgba(var(--brand-rgb), .4);
+}
+
+.fm-folder.is-new .fm-folder-ico {
+  color: var(--c-brand);
+  background: transparent;
+  border-color: rgba(var(--brand-rgb), .18);
+}
+
+.fm-folder.is-new .fm-folder-name {
+  color: inherit;
+  font-weight: 500;
+}
+
+/* ---------------- 头部「‹ 合集」返回按钮 ---------------- */
+
+.fm-back {
+  height: 26px;
+  color: var(--c-text-sub);
+  border-radius: 8px;
+  flex: none;
+  justify-content: center;
+  align-items: center;
+  gap: 3px;
+  padding: 0 8px 0 6px;
+  font-size: 11.5px;
+  display: inline-flex;
+  transition:
+    background-color .16s var(--ease-out-cubic),
+    color .16s var(--ease-out-cubic),
+    transform .18s var(--ease-out-cubic);
+}
+
+.fm-back:hover {
+  color: var(--c-brand-strong);
+  background: var(--c-hover);
+}
+
+.fm-back:active {
+  transform: scale(.97);
+}
+
+.fm-back-text {
+  white-space: nowrap;
+}
+
+/* 进入分类时卡片墙淡入上浮：与「返回合集」的 fm-drawer-back 成对 */
+.fm-wall.is-cat-in {
+  animation: fm-wall-in .26s var(--ease-out-cubic) both;
+}
+
+@keyframes fm-wall-in {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ---------------- 护眼模式（ns-paper）跟随 ---------------- */
+
+.fm-layer.ns-paper .fm-folder {
+  background: #fffdf8;
+  border-color: #f2e9d6;
+}
+
+.fm-layer.ns-paper .fm-folder:hover {
+  border-color: rgba(var(--brand-rgb), .26);
+}
+
+.fm-layer.ns-paper .fm-folder.on {
+  background: linear-gradient(180deg, rgba(var(--brand-rgb), .05), #fffdf8 72%);
+}
+
+.fm-layer.ns-paper .fm-folder.is-new {
+  background: transparent;
+  border-color: rgba(var(--brand-rgb), .3);
+}
+
+.fm-layer.ns-paper .fm-folder-ico {
+  background: rgba(var(--brand-rgb), .07);
+  border-color: #f2e9d6;
+}
+
+.fm-layer.ns-paper .fm-folder[data-category="gray"] .fm-folder-ico {
+  color: var(--c-text-sub);
+  background: #f2e9d6;
+  border-color: #f2e9d6;
+}
+
+/* ---------------- 窄窗适配 ---------------- */
+
+@media (max-width:860px) {
+  .fm-folders {
+    grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
+    gap: 10px;
+    padding: 12px 12px 92px;
+  }
+
+  .fm-collections-sub {
+    display: none;
+  }
+
+  .fm-folder {
+    min-height: 88px;
+    padding: 10px 10px 9px;
+  }
+}
+
+/* ---------------- 低动态偏好：成对动画一起关闭 ---------------- */
+
+@media (prefers-reduced-motion:reduce) {
+  .fm-collections,
+  .fm-collections.is-back,
+  .fm-folder,
+  .fm-wall.is-cat-in {
+    animation: none !important;
+  }
+
+  .fm-rail .fm-rail-collections,
+  .fm-rail .fm-rail-arrow,
+  .fm-folder,
+  .fm-folder-ico,
+  .fm-back {
+    transition: none !important;
+  }
+
+  .fm-folders {
+    scroll-behavior: auto;
+  }
+}
