@@ -93,8 +93,9 @@ def main():
         print(OK + "服务在跑：version=%s mock=%s authMode=%s 账号数=%s"
               % (d.get("version"), d.get("mock"), auth_mode or "（旧版无此字段）",
                  d.get("accounts")))
-        if d.get("version") != "4.6.0":
-            print(WARN + "版本不是 4.6.0（当前 %s）——可能还是旧代码" % d.get("version"))
+        expect = os.environ.get("MP_EXPECT_VERSION", "4.8.6")
+        if d.get("version") != expect:
+            print(WARN + "版本不是 %s（当前 %s）——可能还是旧代码" % (expect, d.get("version")))
             fails += 1
     else:
         if code in (404, 501):

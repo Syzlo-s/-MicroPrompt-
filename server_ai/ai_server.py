@@ -152,7 +152,7 @@ PORT = int(os.environ.get("MP_PORT", "2581"))
 CASDOOR_URL = os.environ.get("MP_CASDOOR_URL", "http://127.0.0.1:2580").rstrip("/")
 
 # ---- 4.1.0 自建账号模块 ----
-VERSION = "4.7.1"
+VERSION = "4.8.6"
 # 跨域策略：默认空 = 管理接口（/ai/admin/*）不发 CORS 头，只有同源的后台页面能用；
 # 客户端接口照旧放开（桌面端 WebView2 的 origin 是 http://tauri.localhost，必须允许）。
 # 若后台要挪到别的域下面访问，设 MP_CORS_ORIGINS=* 即恢复 4.7.0 的旧行为。
