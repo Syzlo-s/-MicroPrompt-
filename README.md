@@ -612,6 +612,39 @@ curl -sI "http://<服务器>:2581/updates/files/轻提词安装包_v<版本>.exe
 > 无滚动条，点「今天 / 蓝色 / 红色 / 未分类合集」过滤标题正确；侧栏 40 条 = 32 张卡片 + 8 条灰度，
 > 灰度在侧栏出现 0 次；全灰度数据空态 5/5 通过。
 
+### 4.8.7 追加调整 · 二（2026-10-30 本地构建，版本号仍 4.8.6）
+
+> 用户 2026-10-30 反馈：文件管理台里点「新建笔记」「＋新建分类合集」「重命名」，
+> 弹出的命名输入框**「取消」按钮点不动**（键盘 Esc / Enter 正常）。
+> 修复后已重建 release exe 并同步 `便携版\轻提词.exe`（旧版留
+> `轻提词.exe.bak-cancel-fix-20261030`）与安装版 `D:\轻提词\轻提词.exe`
+> （旧版留同名 `.bak`）；**没有提升版本号、没有重新出安装包 / 上传更新源**。
+
+- **根因**：`FileManager.tsx` 把 `InputDialog` / `ConfirmDialog` 渲染在整屏层
+  `.fm-layer` 内部；`.fm-layer` 为了管理台展开 / 收起转场期间让点击穿透到侧栏，
+  设了 `pointer-events: none`，而 `pointer-events` 是**继承属性**，`.dialog-overlay`
+  没有显式恢复 → 整个弹窗（取消 / 确定 / 遮罩）都继承 `none`，鼠标点击会穿透到
+  下面的卡片墙；只有键盘能操作（弹窗挂载即聚焦输入框，`Enter` 确认、`Esc` 取消），
+  所以最先被发现的是「取消」按钮。
+  （对照：`ContextMenu` 用 `createPortal` 挂到 `document.body`，管理台的右键菜单一直正常。）
+- **修复**：`src/styles.css` 的 `.dialog-overlay` 显式加 `pointer-events: auto;`（附注释）。
+  不改 `.fm-layer`（保留转场点击穿透语义），也不把弹窗 portal 出去（会丢掉
+  `.app-root` 的 CSS `zoom` 缩放一致性）。
+- **实测**（WebView2 CDP + `Input.dispatchMouseEvent` 真实鼠标事件，隔离 WebView2
+  profile / data 目录；新增回归脚本 `scripts/ui-dialog-cancel-smoke.mjs`）：
+  - 修复前（旧 exe `2B8BEF5E…`）：管理台 A 新建笔记 / B 新建分类 / C 重命名 /
+    D 删除确认 / F 重命名「确定」全部 FAIL —— `.dialog-overlay` 计算值
+    `pointerEvents = "none"`、取消按钮中心 `elementFromPoint` 是
+    `DIV.ns-grid.fm-wall`、真实点击后弹窗仍在；侧栏对照组 E PASS
+    → 只有 `.fm-layer` 子树内的弹窗受影响。
+  - 修复后（新 exe `0D691CF4…`）：A–F **6/6 PASS、退出码 0，连跑 2 次结果一致** ——
+    `pointerEvents = "auto"`、`elementFromPoint` 是 `BUTTON.dlg-btn.dlg-cancel`，
+    点击后弹窗关闭；新建笔记 / 新建分类 / 重命名 / 删除取消均无数据副作用
+    （笔记 3 条、分类数不变）；侧栏对照组无回归。
+  - 证据：本机 `D:\mp-cancel-test\evidence\`（report.json + 修复前后控制台 + 13 张截图）。
+- **可回滚**：`便携版\轻提词.exe.bak-cancel-fix-20261030` /
+  `D:\轻提词\轻提词.exe.bak-cancel-fix-20261030` 均为旧版（`2B8BEF5E…`）。
+
 ## 已知限制（客户端 v4.8.6 / 服务端 v4.8.6 · 2026-10-27 核对）
 
 **界面 / 交互**

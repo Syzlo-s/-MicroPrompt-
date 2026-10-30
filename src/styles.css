@@ -874,6 +874,12 @@ input {
   display: flex;
   position: fixed;
   inset: 0;
+  /* 显式接管指针事件（4.8.7 修复）：文件管理台的 .fm-layer 用
+     pointer-events:none 让转场期间点击穿透到侧栏，而弹窗（新建 / 重命名 /
+     删除确认）是 .fm-layer 的直接子节点；pointer-events 会继承，
+     若不在这里恢复 auto，整个弹窗（含「取消」按钮）都无法被鼠标命中，
+     只能靠键盘 Esc / Enter 操作。 */
+  pointer-events: auto;
 }
 
 .dialog-panel {
