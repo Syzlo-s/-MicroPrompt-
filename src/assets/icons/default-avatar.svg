@@ -1,1 +1,23 @@
-<svg t="1789011195371" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="5580" width="256" height="256"><path d="M501.937582 545.097053c147.891962 0 268.231366-118.534055 268.223274-264.288929 0-145.746783-120.330301-264.28994-268.222263-264.28994-147.890951 0-268.221252 118.584625-268.221252 264.28994C233.71633 426.520519 354.046631 545.097053 501.937582 545.097053zM612.471463 570.546911 411.497184 570.546911c-186.760063 0-338.664249 149.569875-338.664249 333.472733l0 19.794109c0 96.139636 149.47278 96.139636 338.664249 96.139636l200.974278 0c181.747565 0 338.694591 0 338.694591-96.139636l0-19.794109C951.164031 720.158252 799.235571 570.546911 612.471463 570.546911z" fill="#272636" p-id="5581"></path></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- 轻提词 V4.8.6 默认头像：靛蓝渐变底 + 白色抽象人像。
+       不用文字、不依赖外部字体/图片；几何形状简单，缩到 22px（顶栏）也认得出。 -->
+  <defs>
+    <linearGradient id="mp-avatar-bg" x1="30" y1="18" x2="226" y2="242" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8A8CFF"/>
+      <stop offset=".52" stop-color="#6366F1"/>
+      <stop offset="1" stop-color="#4338CA"/>
+    </linearGradient>
+    <radialGradient id="mp-avatar-glow" cx="0" cy="0" r="1" gradientTransform="translate(188 46) rotate(48) scale(168)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity=".22"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="256" height="256" fill="url(#mp-avatar-bg)"/>
+  <rect width="256" height="256" fill="url(#mp-avatar-glow)"/>
+  <g fill="#FFFFFF">
+    <!-- 头 -->
+    <circle cx="128" cy="97" r="38"/>
+    <!-- 肩：饱满的半圆，贴到画布底边，由容器圆角统一裁切 -->
+    <path d="M128 147c-46.4 0-84 29.9-84 66.8V256h168v-42.2c0-36.9-37.6-66.8-84-66.8z"/>
+  </g>
+</svg>

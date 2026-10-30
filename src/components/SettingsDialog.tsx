@@ -13,6 +13,8 @@ const UI_MARKS = ["小", "中", "大"];
 const PANEL_W = 320;
 /** 客服反馈邮箱 */
 const SUPPORT_EMAIL = "Songyizhen5565@outlook.com";
+/** 头像大小上限（MB）：只做界面文案用，数值来源同 utils.MAX_AVATAR_BYTES，避免两处写死不一致 */
+const AVATAR_MAX_MB = Math.round(MAX_AVATAR_BYTES / (1024 * 1024));
 
 /** 说明提示：文字右侧的小感叹号，鼠标悬停 1 秒后显示作用说明 */
 function InfoTip({ text }: { text: string }) {
@@ -316,7 +318,7 @@ export default function SettingsDialog({
     if (!file) return;
     setAccMsg("");
     if (file.size > MAX_AVATAR_BYTES) {
-      setAccMsg("图片过大，请选择小于 2MB 的图片");
+      setAccMsg(`图片过大，请选择小于 ${AVATAR_MAX_MB}MB 的图片`);
       return;
     }
     try {
@@ -326,7 +328,9 @@ export default function SettingsDialog({
       setAccMsg("图片处理失败，请换一张试试");
       return;
     }
-    // 云端账号：同步头像到 Casdoor
+    // 云端账号：同步头像到 Casdoor。
+    // 注意顺序：上面已经先把头像存进本地 store（并落 localStorage），
+    // 所以即使服务端对文件大小另有更严的限制、上传失败，本地头像也不会丢。
     if (isCloud && authToken) {
       const token = authToken;
       try {
@@ -335,8 +339,9 @@ export default function SettingsDialog({
         setAccMsg("头像已同步到云端");
       } catch (err) {
         setAccMsg(
-          "已保存到本地；云端同步失败：" +
-            (err instanceof Error ? err.message : ""),
+          "已保存到本机；云端同步失败：" +
+            (err instanceof Error ? err.message : "未知错误") +
+            "（本机头像已生效，不影响使用，可换张小一点的图再试）",
         );
       }
     }
@@ -441,7 +446,7 @@ export default function SettingsDialog({
       {/* 账号卡：头像 + 当前身份 */}
       <section className="set-card acc-card">
         <div className="acc-hero">
-          <label className="acc-hero-avatar" title="点击更换头像（正方形，≤2MB）">
+          <label className="acc-hero-avatar" title={`点击更换头像（正方形，≤${AVATAR_MAX_MB}MB）`}>
             <img src={avatar ?? defaultAvatar} alt="头像" />
             <input type="file" accept="image/*" onChange={handleAvatarFile} />
           </label>
@@ -916,7 +921,7 @@ export default function SettingsDialog({
 
   const viewAbout = (
     <div className="set-section set-about">
-      <div className="set-hint">轻提词 测试 4.7.1 · 本地桌面速记 · AI 额度与会员制</div>
+      <div className="set-hint">轻提词 测试 4.8.6 · 本地桌面速记 · AI 额度与会员制</div>
       <div className="set-hint">
         AI 免费版每天 {aiQuota?.freeQuota ?? 3} 次 · 日卡 ¥2（24 小时）/ 月卡 ¥8（30 天）
       </div>

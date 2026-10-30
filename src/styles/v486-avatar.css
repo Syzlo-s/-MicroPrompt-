@@ -1,0 +1,96 @@
+/* ============================================================
+   轻提词 V4.8.6 · 头像与弹窗输入框（item 1 / item 3）
+   ------------------------------------------------------------
+   只服务两件事：
+     1. 设置页 / 用户页里的头像**按原比例缩小**（软件首页顶栏 22px 头像不动）；
+     2. 新建笔记命名弹窗的输入框只保留一层细边框（去掉聚焦光环）。
+   颜色一律走主题变量 / rgba(var(--brand-rgb))，护眼模式自动跟随；
+   prefers-reduced-motion 下不动画。
+   ============================================================ */
+
+/* ---------------- 1. 设置页 / 用户页头像：原比例缩小 ---------------- */
+
+/* 缩小只改「尺寸 + 圆角 + 阴影」三样，宽高始终相等（正方形不变形）；
+   头像 img 仍由基础样式的 width/height:100% + object-fit:cover 撑满。 */
+
+/* 账号卡大头像：58px → 46px（比例 0.793）
+   圆角 1.1rem(17.6px) × 0.793 ≈ 13.9px → 0.87rem
+   阴影 offset / blur / spread 同比缩小，避免头像变小后阴影显得又重又散 */
+.acc-hero-avatar {
+  width: 46px;
+  height: 46px;
+  border-radius: 0.87rem;
+  box-shadow: 0 5px 13px -5px rgba(var(--brand-rgb), .5);
+}
+
+/* 悬停：位移与阴影同样同比缩小（-2px → -1.6px） */
+.acc-hero-avatar:hover {
+  box-shadow: 0 8px 17px -6px rgba(var(--brand-rgb), .6);
+  transform: translateY(-1.6px);
+}
+
+/* 设置面板头部小头像：46px → 36px（比例 0.783）
+   圆角 12px × 0.783 ≈ 9.4px → 9px；阴影同比缩小 */
+.head-avatar-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  box-shadow: 0 8px 20px -4px rgba(var(--brand-rgb), .15),
+    0 6px 8px -5px rgba(15, 23, 42, .08);
+}
+
+/* 旧版设置页头像预览（当前无组件引用，保留兜底）：56px → 44px
+   圆角 14px × 0.786 ≈ 11px */
+.set-avatar-preview {
+  width: 44px;
+  height: 44px;
+  border-radius: 11px;
+}
+
+/* 减弱动效：不缩放、不位移（颜色 / 边框变化仍可瞬时生效） */
+@media (prefers-reduced-motion: reduce) {
+  .acc-hero-avatar,
+  .head-avatar-btn {
+    transition: none;
+  }
+
+  .acc-hero-avatar:hover,
+  .head-avatar-btn:hover {
+    transform: none;
+  }
+}
+
+/* ---------------- 3. 命名弹窗输入框：只留一层细边框 ---------------- */
+
+/* 根因：.dlg-input:focus 在原样式里叠了一圈 3px 主题色光环
+   （默认「墨黑」主题下 rgba(31,41,55,.1) 看起来就是「黑细边框外面又套一圈灰边」）。
+   下面只对 .dlg-input 自身收口：清掉光环与可能来自浏览器默认的轮廓，
+   边框永远只有 1px 这一层 —— hover 轻微加深、focus 换主题色。
+   选择器全部限定在 .dlg-input 上，ConfirmDialog 等其它弹窗不受影响。 */
+
+.dlg-input,
+.dlg-input:hover,
+.dlg-input:focus,
+.dlg-input:focus-visible {
+  outline: none;
+  outline-offset: 0;
+  box-shadow: none;
+}
+
+/* 悬停：比默认边框稍深一点（走主题色，换主题 / 护眼模式自动跟随） */
+.dlg-input:hover {
+  border-color: rgba(var(--brand-rgb), .28);
+}
+
+/* 聚焦：只换这一层 1px 边框的颜色，不再叠加任何光环 */
+.dlg-input:focus,
+.dlg-input:focus-visible {
+  border-color: rgba(var(--brand-rgb), .55);
+  box-shadow: none;
+}
+
+/* 同时 hover + focus 时以聚焦色为准 */
+.dlg-input:hover:focus,
+.dlg-input:hover:focus-visible {
+  border-color: rgba(var(--brand-rgb), .55);
+}

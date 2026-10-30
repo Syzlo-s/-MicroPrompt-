@@ -301,7 +301,7 @@ export default function StorageControls({
             <button
               className="btn btn-sm"
               onClick={onOpenManager}
-              title="打开文件管理台：搜索、批量整理、导出"
+              title="打开文件管理台：分类、搜索、整屏卡片墙"
             >
               文件管理
             </button>
@@ -389,7 +389,7 @@ export default function StorageControls({
           <span className="set-card-title">文件管理台</span>
         </div>
         <div className="storage-hint">
-          搜索标题与正文、按时间或颜色筛选、批量置顶 / 改色 / 删除 / 导出，
+          搜索标题与正文、按时间或颜色分类、在整屏卡片墙里一次看很多条，
           都能在一个面板里完成（快捷键 Ctrl + K）。
         </div>
         {onOpenManager && (
