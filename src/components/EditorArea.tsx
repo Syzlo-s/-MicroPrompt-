@@ -13,6 +13,7 @@ import {
   RefblockNode,
   IndentParagraph,
   AiBlockNode,
+  TodoBoxNode,
 } from "../tiptap/extensions";
 import { useStore } from "../store";
 import { clamp, uid } from "../utils";
@@ -30,9 +31,11 @@ import boldSvg from "../assets/icons/bold.svg";
 import underlineSvg from "../assets/icons/underline.svg";
 import strikeSvg from "../assets/icons/strikethrough.svg";
 import dividerSvg from "../assets/icons/divider.svg";
+import todoBoxSvg from "../assets/icons/todo-box.svg";
 import paletteSvg from "../assets/icons/palette.svg";
 import aiSvg from "../assets/icons/ai.svg";
 import arrowDownSvg from "../assets/icons/arrow-down.svg";
+import designSvg from "../assets/icons/design.svg";
 import codeSvg from "../assets/icons/code.svg";
 import shanchuSvg from "../assets/icons/shanchu.svg";
 import cutSvg from "../assets/icons/cut.svg";
@@ -53,6 +56,7 @@ const EDITOR_EXTENSIONS = [
   FontSize,
   DividerNode,
   RefblockNode,
+  TodoBoxNode,
   AiBlockNode,
 ];
 
@@ -180,7 +184,7 @@ interface PopoverState {
   y: number;
   w: number;
   h: number;
-  /** 分割线节点位置（ProseMirror pos） */
+  /** 分隔线节点位置（ProseMirror pos） */
   pos?: number;
   /** 代码引用块 uuid（kind === "code" 时使用） */
   uuid?: string;
@@ -260,6 +264,9 @@ export default function EditorArea() {
   const showWordCount = useStore((s) => s.showWordCount);
   const aiFontSize = useStore((s) => s.aiFontSize);
   const aiQuota = useStore((s) => s.aiQuota);
+  const openSettings = useStore((s) => s.openSettings);
+  const notesSidebarOpen = useStore((s) => s.notesSidebarOpen);
+  const toggleNotesSidebar = useStore((s) => s.toggleNotesSidebar);
 
   /** 「AI 润色」按钮的悬浮说明：让用户点之前就知道额度情况 */
   const aiQuotaTip = aiQuota
@@ -372,7 +379,7 @@ export default function EditorArea() {
   );
 
   // 取「最后一个分割点之后」的提示词范围：
-  // 分割点包括可见分割线（divider）与 AI 润色框（aiBlock），
+  // 分割点包括可见分隔线（divider）与 AI 润色框（aiBlock），
   // 它们会切断上下文——AI 只润色其下方新编辑的内容；
   // 因此：润色框存在且下方无新内容时，按钮不会出现（需求 1、3）。
   const getDocRange = useCallback((ed: Editor) => {
@@ -660,11 +667,19 @@ export default function EditorArea() {
       t.replace(/[\s\u00A0\u3000\u200B\uFEFF]+/g, "") === "";
 
     // 1) 空段落：整段删除
+    // 注意：只含原子节点（待办框 / 代码引用块）的段落 textContent 也是空，
+    // 但它们有可见内容，不能当成空白行删掉。
     const empties: { pos: number; size: number }[] = [];
     doc.descendants((node, pos) => {
-      if (node.type.name === "paragraph" && isBlank(node.textContent)) {
-        empties.push({ pos, size: node.nodeSize });
-      }
+      if (node.type.name !== "paragraph" || !isBlank(node.textContent)) return;
+      let hasAtom = false;
+      node.forEach((child) => {
+        if (child.type.name === "todoBox" || child.type.name === "refblock") {
+          hasAtom = true;
+        }
+      });
+      if (hasAtom) return;
+      empties.push({ pos, size: node.nodeSize });
     });
     const emptyStarts = new Set(empties.map((e) => e.pos));
 
@@ -1041,6 +1056,19 @@ export default function EditorArea() {
     setBrushActive(true);
   };
 
+  /** 插入待办框：
+   *  · 有选中文字 → 在**选中文字前面**插入一个空方框（选中的文字原样保留在后面）；
+   *  · 没有选中 → 就在光标处插入一个空方框。
+   *  行内原子节点；点击勾选交互在 TodoBoxNode 的 NodeView 里。 */
+  const insertTodoBox = () => {
+    const { from } = editor.state.selection;
+    editor
+      .chain()
+      .focus()
+      .insertContentAt(from, { type: "todoBox", attrs: { checked: false } })
+      .run();
+  };
+
   const textStyle = editor.getAttributes("textStyle") as {
     color?: string;
     fontSize?: number;
@@ -1098,7 +1126,44 @@ export default function EditorArea() {
         )}
         {!note && loaded && (
           <div className="editor-empty">
-            <div className="editor-empty-tip">暂无笔记 · 点击左上角 + 新建</div>
+            <div className="editor-empty-guide">
+              <div className="editor-empty-title">还没有笔记</div>
+              <div className="editor-empty-sub">
+                {notesSidebarOpen
+                  ? "点右下角笔记栏底部的「＋」，写下第一条"
+                  : "先点右下角的「展开笔记栏」，再点底部的「＋」新建"}
+              </div>
+              <button
+                className="editor-empty-btn"
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  if (!notesSidebarOpen) toggleNotesSidebar();
+                }}
+                style={{ display: notesSidebarOpen ? "none" : undefined }}
+              >
+                展开笔记栏
+              </button>
+            </div>
+            {/* 指向右下角新建按钮的引导箭头（侧栏开合位置一致，都指向右下角） */}
+            <div className="editor-empty-arrow" aria-hidden="true">
+              <svg viewBox="0 0 84 84" fill="none" aria-hidden="true">
+                <path
+                  d="M8 10c26 2 40 13 45 32 2.4 9 .8 17-3 25"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeDasharray="1 7"
+                />
+                <path
+                  d="M42 58l8 11 11-7"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </div>
           </div>
         )}
       </div>
@@ -1334,20 +1399,30 @@ export default function EditorArea() {
       )}
     </div>
 
-    {/* ===== 底部工具栏（贯穿横条正上方） ===== */}
+    {/* ===== 底部工具栏（贯穿横条正上方） =====
+        4.8.6 顺序（左 → 右，与设置界面底部工具栏结构一致）：
+          格式刷 | 文字大小、文字颜色 | 加粗、下划线、删除线、分隔线 |
+          待办框、回到底部 | 设置
+        每个按钮带 data-tool（稳定锚点，供自动化校验顺序用；
+        「回到底部」按钮的 title 会随滚动状态变化，不能当锚点） */}
     <div
       className={"editor-toolbar" + (scrolling ? " scrolling" : "")}
       onMouseDown={(e) => e.preventDefault()}
     >
+      {/* 第 1 组：格式刷 */}
       <button
         className={"tool-btn" + (brushActive ? " tool-checked" : "")}
+        data-tool="format-brush"
         title="格式刷（点击后选中要应用格式的文字）"
         onClick={onBrushClick}
       >
         <Icon src={brushSvg} size={18} />
       </button>
+      <div className="tool-vline" />
+      {/* 第 2 组：文字大小、文字颜色 */}
       <button
         className="tool-btn"
+        data-tool="font-size"
         title="文字大小"
         onClick={(e) => {
           const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -1357,44 +1432,9 @@ export default function EditorArea() {
       >
         <Icon src={fontSvg} size={18} />
       </button>
-      <div className="tool-vline" />
-      <button
-        className={"tool-btn" + (isMarkFullyActive("bold") ? " tool-checked" : "")}
-        title="加粗"
-        onClick={() => editor.chain().focus().toggleBold().run()}
-      >
-        <Icon src={boldSvg} size={18} />
-      </button>
-      <button
-        className={"tool-btn" + (isMarkFullyActive("underline") ? " tool-checked" : "")}
-        title="下划线"
-        onClick={() => editor.chain().focus().toggleUnderline().run()}
-      >
-        <Icon src={underlineSvg} size={18} />
-      </button>
-      <button
-        className={"tool-btn" + (isMarkFullyActive("strike") ? " tool-checked" : "")}
-        title="删除线"
-        onClick={() => editor.chain().focus().toggleStrike().run()}
-      >
-        <Icon src={strikeSvg} size={18} />
-      </button>
       <button
         className="tool-btn"
-        title="插入分割线"
-        onClick={() =>
-          editor
-            .chain()
-            .focus()
-            .insertContent([{ type: "divider" }, { type: "paragraph" }])
-            .run()
-        }
-      >
-        <Icon src={dividerSvg} size={18} />
-      </button>
-      <div className="tool-vline" />
-      <button
-        className="tool-btn"
+        data-tool="text-color"
         title="文字颜色"
         onClick={(e) => {
           const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -1409,8 +1449,61 @@ export default function EditorArea() {
         />
       </button>
       <div className="tool-vline" />
+      {/* 第 3 组：加粗、下划线、删除线、分隔线 */}
+      <button
+        className={"tool-btn" + (isMarkFullyActive("bold") ? " tool-checked" : "")}
+        data-tool="bold"
+        title="加粗"
+        onClick={() => editor.chain().focus().toggleBold().run()}
+      >
+        <Icon src={boldSvg} size={18} />
+      </button>
+      <button
+        className={"tool-btn" + (isMarkFullyActive("underline") ? " tool-checked" : "")}
+        data-tool="underline"
+        title="下划线"
+        onClick={() => editor.chain().focus().toggleUnderline().run()}
+      >
+        <Icon src={underlineSvg} size={18} />
+      </button>
+      <button
+        className={"tool-btn" + (isMarkFullyActive("strike") ? " tool-checked" : "")}
+        data-tool="strike"
+        title="删除线"
+        onClick={() => editor.chain().focus().toggleStrike().run()}
+      >
+        <Icon src={strikeSvg} size={18} />
+      </button>
       <button
         className="tool-btn"
+        data-tool="divider"
+        title="插入分隔线"
+        onClick={() =>
+          editor
+            .chain()
+            .focus()
+            .insertContent([{ type: "divider" }, { type: "paragraph" }])
+            .run()
+        }
+      >
+        <Icon src={dividerSvg} size={18} />
+      </button>
+      <div className="tool-vline" />
+      {/* 第 4 组：待办框、回到底部（滚到底后变成回到顶部） */}
+      <button
+        className="tool-btn"
+        data-tool="todo-box"
+        title="待办框（选中文字时插在文字前面；点正文方框可勾选）"
+        aria-label="待办框"
+        // 别让按钮抢走编辑器焦点：否则「选中文字 → 点待办框」的选区会丢
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={insertTodoBox}
+      >
+        <Icon src={todoBoxSvg} size={18} />
+      </button>
+      <button
+        className="tool-btn"
+        data-tool="scroll"
         title={atBottom ? "回到顶部" : "回到底部"}
         onClick={atBottom ? scrollToTop : scrollToBottom}
       >
@@ -1419,6 +1512,17 @@ export default function EditorArea() {
           size={18}
           className={"tool-icon-rot" + (atBottom ? " tool-icon-flip" : "")}
         />
+      </button>
+      <div className="tool-vline" />
+      {/* 第 5 组：设置 */}
+      <button
+        className="tool-btn"
+        data-tool="settings"
+        title="设置"
+        aria-label="设置"
+        onClick={() => openSettings(false)}
+      >
+        <Icon src={designSvg} size={18} />
       </button>
     </div>
     </>

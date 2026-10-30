@@ -1,0 +1,75 @@
+/* ============================================================
+   轻提词 V4.8.6 · 编辑器工具栏重排 + 待办框（item 6）
+   ------------------------------------------------------------
+   工具栏顺序（左 → 右）：
+     格式刷 | 文字大小、文字颜色 | 加粗、下划线、删除线、分隔线 |
+     待办框、回到底部 | 设置
+   自动化校验锚点：.editor-toolbar .tool-btn[data-tool] 的先后顺序
+   （「回到底部」按钮的 title 会随滚动状态变成「回到顶部」，不能当锚点）
+
+   待办框：正文里插入一个空方框，点一下用**软件主题色**填充；
+   颜色全部走主题变量（--c-brand / rgba(var(--brand-rgb))），
+   换主题色、护眼模式都自动跟随，不需要重写已保存的笔记。
+   ============================================================ */
+
+/* 正文里的待办框（ProseMirror 行内原子节点，点击勾选 / 取消勾选） */
+.mp-todo-box {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 14px;
+  height: 14px;
+  margin: 0 2px;
+  padding: 0;
+  border: 1.5px solid #c3ccd9;
+  border-radius: 3.5px;
+  /* 未勾选时不填底色：白纸、护眼米色纸上都能自然融入 */
+  background: transparent;
+  vertical-align: -2px;
+  cursor: pointer;
+  transition:
+    background-color 0.16s var(--ease-out-cubic),
+    border-color 0.16s var(--ease-out-cubic),
+    box-shadow 0.16s var(--ease-out-cubic),
+    transform 0.12s var(--ease-out-cubic);
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* 悬停：边框往主题色靠一点，并有一圈很淡的主题色光晕 */
+.mp-todo-box:hover {
+  border-color: rgba(var(--brand-rgb), 0.55);
+  box-shadow: 0 0 0 2px rgba(var(--brand-rgb), 0.08);
+}
+
+.mp-todo-box:active {
+  transform: scale(0.9);
+}
+
+/* 勾选：只做**纯色填充**（软件主题色）—— 4.8.6 按用户要求去掉了打勾图标，
+   换主题色 / 护眼模式都自动跟随 */
+.mp-todo-box[data-todo-box="1"],
+.mp-todo-box[data-checked="1"] {
+  background: var(--c-brand);
+  border-color: var(--c-brand);
+}
+
+/* 勾选后的悬停：主题色再深一档 */
+.mp-todo-box[data-todo-box="1"]:hover,
+.mp-todo-box[data-checked="1"]:hover {
+  background: var(--c-brand-strong);
+  border-color: var(--c-brand-strong);
+  box-shadow: 0 0 0 2px rgba(var(--brand-rgb), 0.16);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mp-todo-box {
+    transition: none !important;
+  }
+
+  .mp-todo-box:active {
+    transform: none;
+  }
+}

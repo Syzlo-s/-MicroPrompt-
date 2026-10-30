@@ -107,10 +107,11 @@ export const FontSize = Extension.create({
 });
 
 /* ============================================================
- * 分割线 Node：<hr data-style="N"/>
+ * 分隔线 Node：<hr data-style="N"/>
  *   4.0.0 起统一样式（细线，与 AI 润色框框线一致）；
  *   保留 data-style 以兼容旧笔记，n 不再影响显示。
  *   块高固定 22px（对齐 C++ kHrBlockHeight），线居中
+ *   注：用户可见文案统一叫「分隔线」（不是「分割线」）
  * ============================================================ */
 export interface DividerAttrs {
   style: number;
@@ -500,3 +501,103 @@ export const AiBlockNode = Node.create({
     return ReactNodeViewRenderer(AiBlockView);
   },
 });
+
+/* ============================================================
+ * 待办框 Node（4.8.6）：<span data-todo-box="1|0" class="mp-todo-box">
+ *   - 行内原子节点（不是列表）：点工具栏「待办框」在当前光标处插入一个空方框
+ *   - 点击正文里的方框 → 勾选，填充**软件主题色**（CSS 变量 --c-brand，
+ *     换主题色、护眼模式都自动跟随）；再点一下取消勾选
+ *   - 持久化：data-todo-box="1|0"，保存后重开笔记、复制粘贴都能带回勾选状态；
+ *     旧版本不认识这个 span 时会被当成普通行内元素忽略，不会报错
+ * ============================================================ */
+export const TodoBoxNode = Node.create({
+  name: "todoBox",
+  group: "inline",
+  inline: true,
+  atom: true,
+  // 点击由 NodeView 自己接管（勾选 / 取消勾选），不做整块选中的效果
+  selectable: false,
+
+  addAttributes() {
+    return {
+      checked: {
+        default: false,
+        // 回读：新格式 data-todo-box="1"；同时兼容 data-checked="1"
+        parseHTML: (el: HTMLElement) =>
+          el.getAttribute("data-todo-box") === "1" ||
+          el.getAttribute("data-checked") === "1",
+        renderHTML: (attrs: Record<string, unknown>) => ({
+          "data-todo-box": attrs.checked ? "1" : "0",
+        }),
+      },
+    };
+  },
+
+  parseHTML() {
+    return [
+      { tag: "span[data-todo-box]" },
+      // 兼容别的写法（例如外部 HTML 只有 data-checked）
+      { tag: "span[data-checked]" },
+    ];
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    // 勾选状态由 data-todo-box 承载；填充色交给 CSS（.mp-todo-box），
+    // 这样主题色一变，正文里所有待办框立刻跟着变，不需要重写文档。
+    return [
+      "span",
+      mergeAttributes(HTMLAttributes, {
+        class: "mp-todo-box",
+        contenteditable: "false",
+      }),
+    ];
+  },
+
+  addNodeView() {
+    return ReactNodeViewRenderer(TodoBoxView);
+  },
+});
+
+/** 待办框 NodeView：点击切换勾选状态（颜色由 CSS 主题变量决定） */
+function TodoBoxView({ node, editor, getPos }: NodeViewProps) {
+  const checked = Boolean((node.attrs as { checked?: boolean }).checked);
+
+  // 点击方框 = 勾选 / 取消勾选。
+  // mousedown 必须 preventDefault + stopPropagation：否则 ProseMirror 会把这次
+  // 点击当成「移动光标 / 整块选中」，用户正在输入的位置会被悄悄改掉。
+  // 切换放在 click 里做，纯 JS 触发（el.click()）也能生效。
+  const toggle = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const pos = typeof getPos === "function" ? getPos() : undefined;
+      if (typeof pos !== "number") return;
+      // 方框可能已被撤销/删除，pos 失效时不能再写属性，避免改错节点
+      const cur = editor.state.doc.nodeAt(pos);
+      if (!cur || cur.type.name !== "todoBox") return;
+      editor.view.dispatch(
+        editor.state.tr.setNodeMarkup(pos, undefined, {
+          ...node.attrs,
+          checked: !checked,
+        }),
+      );
+    },
+    [checked, editor, getPos, node.attrs],
+  );
+
+  return (
+    <NodeViewWrapper
+      as="span"
+      className="mp-todo-box"
+      data-todo-box={checked ? "1" : "0"}
+      data-checked={checked ? "1" : "0"}
+      contentEditable={false}
+      title={checked ? "待办框（点击取消勾选）" : "待办框（点击用主题色勾选）"}
+      onMouseDown={(e: React.MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+      onClick={toggle}
+    />
+  );
+}
