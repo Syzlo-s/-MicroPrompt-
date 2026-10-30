@@ -28,13 +28,19 @@ export default function WelcomeScreen() {
           <div className="welcome-brand">
             <div>欢迎使用 [ 轻提词 ]（MicroPrompt）</div>
             <div>曾用名： [ 桌面速记 ]（DesktopNotes）</div>
-            <div>当前版本：测试 4.7.1</div>
+            <div>当前版本：测试 4.8.6</div>
           </div>
 
           <h2 className="welcome-h2">如何使用：</h2>
           <ul className="welcome-list">
-            <li>点击左上角「新建」按钮创建新笔记</li>
-            <li>点击左侧笔记卡片可切换笔记，右键卡片可重命名或删除</li>
+            <li>
+              新建笔记：展开右侧笔记栏（右下角按钮 / <b>Ctrl + Shift + B</b>），
+              点底部的「＋」，命名后即可开始写
+            </li>
+            <li>
+              点击右侧笔记卡片可切换笔记；右键卡片可重命名、置顶、
+              移动到分类或删除
+            </li>
             <li>
               顶部工具栏支持字体大小、粗体、下划线、删除线、文字颜色，以及白/黄纸背景切换
             </li>
@@ -46,8 +52,10 @@ export default function WelcomeScreen() {
               换到别的盘，或者把现有笔记整体搬过去
             </li>
             <li>
-              <b>文件管理台（Ctrl + K）</b>：搜索标题与正文、按时间 / 颜色筛选、
-              批量置顶 / 改色 / 删除 / 导出，比一条条点卡片快得多
+              <b>文件管理台（Ctrl + K）</b>：从右侧侧栏展开铺满整页的卡片墙。
+              左侧「合集」是手机文件夹式的分类总览，点开任意文件夹就是全部笔记
+              的卡片墙；「我的分类」里可以自选分类，超过 15 天没打开的笔记会被
+              自动收进「灰度提示词」，重新打开后自动移回未分类
             </li>
           </ul>
 

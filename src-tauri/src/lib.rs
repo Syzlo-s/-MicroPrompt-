@@ -31,6 +31,10 @@ pub struct Note {
     /// 4.6.0：置顶（收藏）。旧数据缺失 → false，写入后与 C++/旧版仍互相兼容。
     #[serde(default)]
     pub pinned: bool,
+    /// 4.8.5：分类。缺省 / None = 未分类；系统自动归档写「灰度提示词」。
+    /// 旧数据缺失 → None；写入时省略该字段（skip_serializing_if），旧版本 / C++ 版会忽略它，双向兼容。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
 }
 
 /// 应用数据全集：notes.json（数组）+ refblocks.json（对象，键=引用块 uuid）

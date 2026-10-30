@@ -5,7 +5,7 @@
 ; 4.6.0：安装位置可选（默认 D:\轻提词），并在安装目录下建好 data 文件夹
 ;        —— 笔记默认就存在「安装目录\data」，卸载时该文件夹不会被删除
 #define MyAppName "轻提词"
-#define MyAppVersion "4.7.1"
+#define MyAppVersion "4.8.6"
 #define MyAppPublisher "MicroPrompt"
 #define MyAppExeName "轻提词.exe"
 #define MyAppDataDir "data"
@@ -31,7 +31,7 @@ WizardImageFile={#SrcRoot}\nsis\sidebarImage.bmp
 WizardSmallImageFile={#SrcRoot}\inno\small.png
 SetupIconFile={#SrcRoot}\icons\icon.ico
 OutputDir=D:\Desktop\桌面速记\轻提词V4.0\release\installer
-OutputBaseFilename=轻提词安装包_v4.7.1
+OutputBaseFilename=轻提词安装包_v4.8.6
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
