@@ -2,11 +2,12 @@ import { Extension, Node, mergeAttributes } from "@tiptap/core";
 import Paragraph from "@tiptap/extension-paragraph";
 import { NodeViewWrapper, ReactNodeViewRenderer } from "@tiptap/react";
 import type { NodeViewProps } from "@tiptap/react";
-import React, { useCallback, useMemo } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useStore } from "../store";
 import { analyzeCodeBlock } from "../utils/codeBlockAnalyzer";
 import { pinScroll } from "../utils/scrollPin";
 import { showToast } from "../utils/toast";
+import { loadImageDataUrl, peekImageDataUrl } from "../utils/noteImages";
 
 /* ============================================================
  * 段落扩展：在默认 paragraph 基础上支持首行缩进（text-indent）
@@ -599,5 +600,288 @@ function TodoBoxView({ node, editor, getPos }: NodeViewProps) {
       }}
       onClick={toggle}
     />
+  );
+}
+
+/* ============================================================
+ * 编辑器图片 Node（4.9.0）：<img data-mp-image="<id>" data-mp-mode="normal|preview">
+ *   - 正文只存 image id，不存 base64：图片二进制落在 <笔记目录>/images/，
+ *     NodeView 挂载时按 id 读回 data URL 显示，notes.json 体积不随图片膨胀
+ *   - 默认展示尺寸固定（320×200，见 styles/mp-image.css），
+ *     所以大图、小图插入后占用的编辑区大小一致
+ *   - 两种展示方式：
+ *       normal  = 正常显示（默认）
+ *       preview = 缩成一行紧凑预览条，避免图片一直占着大块编辑区；
+ *     模式写在 data-mp-mode 里，随笔记保存，重开笔记保持
+ * ============================================================ */
+export type MpImageMode = "normal" | "preview";
+
+export const MpImageNode = Node.create({
+  name: "mpImage",
+  group: "block",
+  atom: true,
+  selectable: true,
+  draggable: true,
+
+  addAttributes() {
+    return {
+      imageId: {
+        default: "" as string,
+        parseHTML: (el: HTMLElement) => el.getAttribute("data-mp-image") ?? "",
+        renderHTML: (attrs: Record<string, unknown>) => ({
+          "data-mp-image": String(attrs.imageId ?? ""),
+        }),
+      },
+      mode: {
+        default: "normal" as MpImageMode,
+        // 只认 preview，其它（含旧数据缺失）一律按 normal，保证默认正常显示
+        parseHTML: (el: HTMLElement): MpImageMode =>
+          el.getAttribute("data-mp-mode") === "preview" ? "preview" : "normal",
+        renderHTML: (attrs: Record<string, unknown>) => ({
+          "data-mp-mode": attrs.mode === "preview" ? "preview" : "normal",
+        }),
+      },
+      /**
+       * 仅用于「插入后定位刚插入的节点」的临时标记：
+       * 块级节点插在段落里时，PM 会拆/丢空段落，插入点可能跑到光标之前，
+       * 靠位置硬算会算错（连插两张时第二张排到第一张上面）。
+       * 不写进 HTML（renderHTML 返回空 + parseHTML 恒 null），清标后不影响数据。
+       */
+      tmpTag: {
+        default: null as string | null,
+        parseHTML: () => null,
+        renderHTML: () => ({}),
+      },
+    };
+  },
+
+  parseHTML() {
+    return [
+      { tag: "img[data-mp-image]" },
+      // 兼容以后可能出现的 figure 包裹写法
+      { tag: "figure[data-mp-image]" },
+    ];
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    // 只写 id + 展示模式，不写 src（真实地址由 NodeView 按需读取）：
+    // 若把 data URL 写进正文，复制/保存时会把整张图 base64 塞进 notes.json。
+    return [
+      "img",
+      mergeAttributes(HTMLAttributes, {
+        alt: "图片",
+        contenteditable: "false",
+      }),
+    ];
+  },
+
+  addNodeView() {
+    return ReactNodeViewRenderer(MpImageView);
+  },
+});
+
+/** 图片 NodeView：先加载 data URL，再按 mode 渲染正常图 / 紧凑预览条 */
+function MpImageView({ node, editor, getPos, selected }: NodeViewProps) {
+  const attrs = node.attrs as { imageId?: string; mode?: MpImageMode };
+  const imageId = String(attrs.imageId ?? "");
+  const preview = attrs.mode === "preview";
+
+  const [url, setUrl] = useState<string | null>(() =>
+    imageId ? peekImageDataUrl(imageId) : null,
+  );
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (!imageId) {
+      setFailed(true);
+      return;
+    }
+    let alive = true;
+    const cached = peekImageDataUrl(imageId);
+    if (cached) {
+      setUrl(cached);
+      setFailed(false);
+      return;
+    }
+    setFailed(false);
+    loadImageDataUrl(imageId)
+      .then((dataUrl) => {
+        if (alive) setUrl(dataUrl);
+      })
+      .catch(() => {
+        if (alive) setFailed(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [imageId]);
+
+  /** 只改当前图片节点的 mode 属性（随笔记落盘，重开笔记后保持） */
+  const setMode = useCallback(
+    (mode: MpImageMode) => {
+      const pos = typeof getPos === "function" ? getPos() : undefined;
+      if (typeof pos !== "number") return;
+      const cur = editor.state.doc.nodeAt(pos);
+      // 节点可能已被删除/撤销，pos 失效时不能乱写属性，否则会改错节点
+      if (!cur || cur.type.name !== "mpImage") return;
+      editor.view.dispatch(
+        editor.state.tr.setNodeMarkup(pos, undefined, { ...cur.attrs, mode }),
+      );
+    },
+    [editor, getPos],
+  );
+
+  /** 切换正常 / 预览：图片高度从 200px 变一行（或反之）会让整页位移，
+   *  切换期间把编辑区滚动位置钉住，看起来就是“原地收起 / 原地展开”。 */
+  const toggleMode = useCallback(
+    (e: React.MouseEvent, mode: MpImageMode) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const scroller = (e.currentTarget as HTMLElement | null)?.closest(
+        ".editor-scroll",
+      ) as HTMLElement | null;
+      pinScroll(scroller, 320);
+      setMode(mode);
+    },
+    [setMode],
+  );
+
+  /** 删除图片节点（可一键撤销；图片文件由后端在保存时统一清理孤儿） */
+  const remove = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const pos = typeof getPos === "function" ? getPos() : undefined;
+      if (typeof pos !== "number") return;
+      const ed = editor;
+      ed.view.dispatch(ed.state.tr.delete(pos, pos + node.nodeSize));
+      showToast({
+        text: "已删除图片",
+        tone: "success",
+        actionLabel: "撤销",
+        onAction: () => ed.commands.undo(),
+        key: "mp-image-remove",
+      });
+    },
+    [editor, getPos, node.nodeSize],
+  );
+
+  // 图片区域内的 mousedown 不能把光标带走（点击按钮/预览条时不移动光标）
+  const stopMouse = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  return (
+    <NodeViewWrapper
+      className={
+        "mp-image-node" +
+        (preview ? " is-preview" : "") +
+        (selected ? " is-selected" : "")
+      }
+      data-mode={preview ? "preview" : "normal"}
+      contentEditable={false}
+    >
+      {preview ? (
+        <div
+          className="mp-image-chip"
+          title="点击展开图片"
+          onMouseDown={stopMouse}
+          onClick={(e) => toggleMode(e, "normal")}
+        >
+          {url ? (
+            <img
+              className="mp-image-chip-thumb"
+              src={url}
+              alt=""
+              draggable={false}
+            />
+          ) : (
+            <span className="mp-image-chip-thumb" />
+          )}
+          <span className="mp-image-chip-text">图片</span>
+          <span className="mp-image-chip-hint">
+            {failed ? "图片读取失败" : "已收起，点击展开"}
+          </span>
+          <button
+            className="mp-image-chip-btn"
+            type="button"
+            title="展开图片"
+            aria-label="展开图片"
+            onMouseDown={stopMouse}
+            onClick={(e) => toggleMode(e, "normal")}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              width="14"
+              height="14"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="mp-image-frame">
+            {url ? (
+              <img src={url} alt="图片" draggable={false} />
+            ) : (
+              <div className={failed ? "mp-image-error" : "mp-image-loading"}>
+                {failed ? "图片读取失败" : "图片加载中…"}
+              </div>
+            )}
+          </div>
+          <div className="mp-image-tools">
+            <button
+              className="mp-image-btn"
+              type="button"
+              title="缩成预览（节省编辑空间）"
+              aria-label="缩成预览"
+              onMouseDown={stopMouse}
+              onClick={(e) => toggleMode(e, "preview")}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="14"
+                height="14"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M6 15l6-6 6 6" />
+              </svg>
+            </button>
+            <button
+              className="mp-image-btn danger"
+              type="button"
+              title="删除图片（可撤销）"
+              aria-label="删除图片"
+              onMouseDown={stopMouse}
+              onClick={remove}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="14"
+                height="14"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.9"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M4 7h16M9.5 7V5.4A1.4 1.4 0 0 1 10.9 4h2.2a1.4 1.4 0 0 1 1.4 1.4V7M6.5 7l.8 11.2A2 2 0 0 0 9.3 20h5.4a2 2 0 0 0 2-1.8L17.5 7M10.5 11v5.5M13.5 11v5.5" />
+              </svg>
+            </button>
+          </div>
+        </>
+      )}
+    </NodeViewWrapper>
   );
 }

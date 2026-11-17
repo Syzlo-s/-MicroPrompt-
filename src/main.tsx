@@ -10,6 +10,8 @@ import "./styles/v486-avatar.css";
 import "./styles/v486-manager.css";
 import "./styles/v486-sidebar.css";
 import "./styles/v486-toolbar.css";
+// 4.9.0：编辑器插入图片——图片节点（固定 320×200 图片框 / 紧凑预览条）样式单独一份，放在最后
+import "./styles/mp-image.css";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

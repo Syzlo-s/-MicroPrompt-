@@ -14,12 +14,18 @@ import {
   IndentParagraph,
   AiBlockNode,
   TodoBoxNode,
+  MpImageNode,
 } from "../tiptap/extensions";
 import { useStore } from "../store";
 import { clamp, uid } from "../utils";
 import { analyzeCodeBlock } from "../utils/codeBlockAnalyzer";
 import { handleCodeRefblockCopy } from "../utils/clipboardCodeBlock";
 import { pinScroll } from "../utils/scrollPin";
+import {
+  imageFilesFromTransfer,
+  isSupportedImageFile,
+  persistImageFile,
+} from "../utils/noteImages";
 import { polishText, AiError, AI_MAX_CHARS } from "../services/ai";
 import { showToast } from "../utils/toast";
 import Icon from "./Icon";
@@ -37,6 +43,7 @@ import aiSvg from "../assets/icons/ai.svg";
 import arrowDownSvg from "../assets/icons/arrow-down.svg";
 import designSvg from "../assets/icons/design.svg";
 import codeSvg from "../assets/icons/code.svg";
+import imageSvg from "../assets/icons/image.svg";
 import shanchuSvg from "../assets/icons/shanchu.svg";
 import cutSvg from "../assets/icons/cut.svg";
 import copySvg from "../assets/icons/copy.svg";
@@ -58,6 +65,7 @@ const EDITOR_EXTENSIONS = [
   RefblockNode,
   TodoBoxNode,
   AiBlockNode,
+  MpImageNode,
 ];
 
 /**
@@ -303,6 +311,15 @@ export default function EditorArea() {
   /** 当前笔记字数（不含空白字符） */
   const [wordCount, setWordCount] = useState(0);
 
+  /** 插入图片：隐藏文件选择器 + 进行中状态 */
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const [imageBusy, setImageBusy] = useState(false);
+  /** useEditor 的 editorProps 在编辑器创建时就要绑定，而真正的图片插入逻辑
+   *  依赖 editor 实例（在 useEditor 之后才拿到），因此通过 ref 中转。 */
+  const insertImagesRef = useRef<(files: File[], pos?: number) => void>(
+    () => {},
+  );
+
   /** AI 润色：按钮显示状态 / 位置 / 处理中 / 提示文字 */
   const [aiBtn, setAiBtn] = useState<{ from: number; to: number } | null>(null);
   const [aiBtnPos, setAiBtnPos] = useState({ x: 0, y: 0 });
@@ -345,6 +362,28 @@ export default function EditorArea() {
     autofocus: false,
     editorProps: {
       transformPastedHTML: (html) => sanitizePastedHtml(html),
+      // 粘贴图片：拦下浏览器把图片直接当 base64 HTML 塞进正文的行为，
+      // 统一走「保存到 images/ + 插入 mpImage 节点」，避免 notes.json 被图片撑大。
+      handlePaste: (_view, event) => {
+        const files = imageFilesFromTransfer(event.clipboardData);
+        if (files.length === 0) return false;
+        event.preventDefault();
+        insertImagesRef.current(files);
+        return true;
+      },
+      // 从资源管理器拖入图片文件：插到鼠标落点位置（而不是光标处）
+      handleDrop: (view, event) => {
+        const dropEvent = event as DragEvent;
+        const files = imageFilesFromTransfer(dropEvent.dataTransfer);
+        if (files.length === 0) return false;
+        dropEvent.preventDefault();
+        const coords = view.posAtCoords({
+          left: dropEvent.clientX,
+          top: dropEvent.clientY,
+        });
+        insertImagesRef.current(files, coords?.pos);
+        return true;
+      },
     },
     onUpdate: ({ editor: ed }) => {
       const id = currentIdRef.current;
@@ -354,6 +393,122 @@ export default function EditorArea() {
       hideBlur();
     },
   });
+
+  /** 保存并插入图片：先把图片落盘拿到 image id，再插入 mpImage 节点。
+   *  · 多张图片按选择顺序插入；
+   *  · 单张失败（格式不支持 / 超过大小上限 / 写盘失败）只跳过这一张并提示；
+   *  · 图片是块级节点，末尾补一个空段落，插完可以直接接着写。 */
+  const insertImages = useCallback(
+    async (files: File[], pos?: number) => {
+      const ed = editor;
+      if (!ed) return;
+      const images = files.filter(isSupportedImageFile);
+      if (images.length === 0) {
+        showToast({
+          text: "只能插入 PNG/JPG/GIF/WebP/BMP 图片",
+          tone: "warn",
+          key: "mp-image-type",
+        });
+        return;
+      }
+      setImageBusy(true);
+      try {
+        const ids: string[] = [];
+        for (const file of images) {
+          try {
+            ids.push(await persistImageFile(file));
+          } catch (e) {
+            showToast({
+              text: e instanceof Error ? e.message : "图片保存失败",
+              tone: "error",
+              key: "mp-image-save",
+            });
+          }
+        }
+        if (ids.length === 0) return;
+        // tmpTag：给这一批图片打唯一标记，插入后据此在文档里找到「刚插进去的节点」。
+        // 不能用 startPos + n 硬算位置：光标在空段落 / 段落首尾时 PM 会拆或丢空段落，
+        // 块级节点可能落到光标之前，导致「连插两张，第二张排到第一张上面」。
+        const tmpTag = `mpimg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const nodes: Array<Record<string, any>> = ids.map((id) => ({
+          type: "mpImage",
+          attrs: { imageId: id, mode: "normal", tmpTag },
+        }));
+        const docMax = ed.state.doc.content.size;
+        const startPos =
+          typeof pos === "number"
+            ? Math.max(0, Math.min(pos, docMax))
+            : ed.state.selection.from;
+        const chain = ed.chain().focus();
+        chain.insertContentAt(startPos, nodes);
+        if (!chain.run()) return;
+
+        // 找到刚插入的图片节点（可能被 PM 挪到 startPos 前后）
+        const inserted: number[] = [];
+        ed.state.doc.descendants((node, offset) => {
+          if (
+            node.type.name === "mpImage" &&
+            (node.attrs as { tmpTag?: string | null }).tmpTag === tmpTag
+          ) {
+            inserted.push(offset);
+            return false;
+          }
+          return true;
+        });
+        if (inserted.length === 0) return;
+        let imagesEnd = 0;
+        for (const offset of inserted) {
+          const node = ed.state.doc.nodeAt(offset);
+          imagesEnd = Math.max(imagesEnd, offset + (node?.nodeSize ?? 1));
+        }
+        const next = ed.state.doc.nodeAt(imagesEnd);
+        if (!next || next.type.name !== "paragraph") {
+          // 图片后面没有段落（例如插在文末）→ 补一个空段落，插完能直接接着写
+          ed.chain().insertContentAt(imagesEnd, { type: "paragraph" }).run();
+        }
+        // 清掉临时标记：不落盘、不影响节点比较，避免脏属性留在撤消栈里
+        let clearTr = ed.state.tr;
+        for (const offset of inserted) {
+          const node = ed.state.doc.nodeAt(offset);
+          if (node && node.type.name === "mpImage") {
+            clearTr = clearTr.setNodeMarkup(offset, undefined, {
+              ...node.attrs,
+              tmpTag: null,
+            });
+          }
+        }
+        if (clearTr.docChanged) ed.view.dispatch(clearTr);
+        // 光标明确放到图片之后（段落内），连续插入图片时按顺序往后排
+        ed.commands.focus(Math.min(imagesEnd + 1, ed.state.doc.content.size));
+      } finally {
+        setImageBusy(false);
+      }
+    },
+    [editor],
+  );
+
+  // editorProps 里的粘贴/拖拽处理通过 ref 调到最新实现
+  useEffect(() => {
+    insertImagesRef.current = (files, pos) => {
+      void insertImages(files, pos);
+    };
+  }, [insertImages]);
+
+  /** 工具栏「插入图片」：打开系统文件选择器（支持多选） */
+  const openImagePicker = useCallback(() => {
+    if (imageBusy) return;
+    imageInputRef.current?.click();
+  }, [imageBusy]);
+
+  const onImageInputChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(e.target.files ?? []);
+      // 清空 input，否则连续选同一张图不会再触发 change
+      e.target.value = "";
+      if (files.length > 0) void insertImages(files);
+    },
+    [insertImages],
+  );
 
   // AI 润色：输入停滞后显示「AI 润色」按钮（渐入渐出）
   // 计算按钮位置（视口坐标：与最后一段文字左对齐、贴在末行下方）
@@ -1168,6 +1323,18 @@ export default function EditorArea() {
         )}
       </div>
 
+      {/* 插入图片用的隐藏文件选择器：工具栏按钮只负责触发 click，
+          这样不依赖 Tauri 的文件对话框插件，也方便自动化测试直接设文件 */}
+      <input
+        ref={imageInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
+        multiple
+        data-mp-image-input="1"
+        style={{ display: "none" }}
+        onChange={onImageInputChange}
+      />
+
       {/* ===== 弹层 ===== */}
       {popover?.kind === "size" && (
         <Popover anchor={popover} onClose={() => setPopover(null)}>
@@ -1401,7 +1568,7 @@ export default function EditorArea() {
 
     {/* ===== 底部工具栏（贯穿横条正上方） =====
         4.8.6 顺序（左 → 右，与设置界面底部工具栏结构一致）：
-          格式刷 | 文字大小、文字颜色 | 加粗、下划线、删除线、分隔线 |
+          格式刷 | 文字大小、文字颜色 | 加粗、下划线、删除线、分隔线、插入图片 |
           待办框、回到底部 | 设置
         每个按钮带 data-tool（稳定锚点，供自动化校验顺序用；
         「回到底部」按钮的 title 会随滚动状态变化，不能当锚点） */}
@@ -1487,6 +1654,19 @@ export default function EditorArea() {
         }
       >
         <Icon src={dividerSvg} size={18} />
+      </button>
+      <button
+        className="tool-btn"
+        data-tool="insert-image"
+        title={
+          imageBusy ? "正在插入图片…" : "插入图片（也可直接粘贴或拖入图片）"
+        }
+        aria-label="插入图片"
+        // 别让按钮抢走编辑器焦点：否则文件选择器关闭后选区/光标会丢
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={openImagePicker}
+      >
+        <Icon src={imageSvg} size={18} />
       </button>
       <div className="tool-vline" />
       {/* 第 4 组：待办框、回到底部（滚到底后变成回到顶部） */}

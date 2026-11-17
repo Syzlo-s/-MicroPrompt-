@@ -5,6 +5,8 @@
 //   · 数据目录（4.6.0 起）：默认落在 exe 同目录 data\（安装版即安装目录），
 //     用户可在设置里自选位置，支持打开文件夹 / 一键搬移 / 恢复默认
 //   · 文件管理台支持：目录列举、盘符、新建文件夹、导出笔记
+//   · 编辑器图片：粘贴的图片按内容哈希落盘到 <数据目录>\images，
+//     正文只存 data-mp-image 引用；保存笔记时清理孤儿图、切换目录时一起搬
 //   · 窗口管理（置顶 / 最大最小化 / 关闭，重绘无边框窗口）
 // ============================================================
 
@@ -401,6 +403,10 @@ fn save_data(data: AppData) -> Result<(), String> {
 
     atomic_write(&dir.join("notes.json"), notes_json.as_bytes()).map_err(|e| e.to_string())?;
     atomic_write(&dir.join("refblocks.json"), rb_json.as_bytes()).map_err(|e| e.to_string())?;
+
+    // 两个 json 都落盘成功后再清孤儿图：保存失败时不动图片，
+    // 免得出现「笔记没存上、图却被清掉」这种更难救的状态
+    prune_unused_images(&data.notes);
     Ok(())
 }
 
@@ -607,6 +613,13 @@ fn switch_data_dir(target: String, move_data: bool) -> Result<SwitchReport, Stri
             serde_json::from_str::<Vec<Note>>(&text)
                 .map_err(|e| format!("校验失败：目标目录里的 notes.json 不是合法笔记数据（{e}）"))?;
         }
+    }
+
+    // 图片单独搬：即使 notes.json 为空或缺失（例如刚清空过笔记）也要带上，
+    // 图片目录与笔记文件是两套数据。不计入 moved_files / moved_bytes，
+    // 那两个字段的语义仍是「笔记数据文件」，前端据此判断是否发生了数据搬移。
+    if move_data && prev != dest {
+        copy_images_dir(&prev, &dest);
     }
 
     // 与默认目录一致时不写自选项（等价于「恢复默认」）
@@ -1047,6 +1060,290 @@ fn b64_decode(s: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// base64 编码（标准字母表 + '=' 补齐）。
+/// 现有代码只有解码；编辑器要把磁盘上的图片转成 data URL 回给前端，需要编码这一半。
+fn b64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/* ============================================================
+ * 编辑器图片存储
+ * ------------------------------------------------------------
+ * 粘贴/插入的图片不能塞进 notes.json（会把笔记文件撑到几十 MB，原子写和
+ * 前端 JSON.parse 都受不了），所以落盘到 <当前数据目录>\images，
+ * 笔记正文里只留 `data-mp-image="<id>"` 引用，前端展示时调 read_image 取。
+ *
+ *   · 文件名即 id：<16 位小写 hex>.<ext>，hex = 内容 FNV-1a 64 哈希
+ *     → 同一张图重复插入得到同一个 id，天然去重，撤销/重做也不用重复落盘
+ *   · 格式按文件头魔术字节判定，不信前端给的扩展名
+ *   · 保存笔记时顺手清理不再被引用的孤儿图（但留 24 小时宽限期，见 prune_unused_images）
+ * ============================================================ */
+
+/// 编辑器图片目录：<当前数据目录>\images
+/// （data_dir() 已处理自选目录 / 默认目录 / 旧数据迁移，这里不再重复解析）
+fn images_dir() -> PathBuf {
+    data_dir().join("images")
+}
+
+/// 图片后缀 → mime（后缀只可能来自魔术字节识别或 read_image 的白名单，可信）
+fn image_mime(ext: &str) -> Option<&'static str> {
+    match ext.to_ascii_lowercase().as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "bmp" => Some("image/bmp"),
+        _ => None,
+    }
+}
+
+/// 按文件头魔术字节识别真实格式。
+/// 不信任前端扩展名：用户可能把 webp 改名成 png，也可能贴进一段根本不是图片的数据。
+fn detect_image_ext(data: &[u8]) -> Option<&'static str> {
+    if data.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
+        return Some("png");
+    }
+    if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("jpg");
+    }
+    if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
+        return Some("gif");
+    }
+    // WebP 是 RIFF 容器：前 4 字节 "RIFF"，第 8 字节起 "WEBP"
+    if data.len() >= 12 && data.starts_with(b"RIFF") && data[8..].starts_with(b"WEBP") {
+        return Some("webp");
+    }
+    if data.starts_with(b"BM") {
+        return Some("bmp");
+    }
+    None
+}
+
+/// FNV-1a 64 位哈希 —— 只用来给图片生成稳定 id（同内容同 id 才能去重），
+/// 不是安全场景，所以不为了它引入 crate，也不追求密码学强度。
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut h = OFFSET_BASIS;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(PRIME);
+    }
+    h
+}
+
+/// 图片 id 的合法性校验（防路径穿越）。
+/// id 会直接拼进 images 目录，前端理论上传什么都可能，所以只认「安全文件名」形态：
+/// 只允许 ASCII 字母数字和 . - _，长度 ≤ 80，不含 ..，后缀在允许清单内。
+fn valid_image_id(id: &str) -> bool {
+    // 正常 id 都是 hex 开头；以 . 开头在 Windows 下是隐藏文件，且没有合法用途
+    if id.is_empty() || id.len() > 80 || id.contains("..") || id.starts_with('.') {
+        return false;
+    }
+    // 只允许 ASCII 字母数字与 . - _：天然排除 / \ : 以及中文、控制字符、盘符
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+    {
+        return false;
+    }
+    // 后缀必须在清单内，避免读到目录里的 .json 等其它文件
+    match id.rsplit_once('.') {
+        Some((_, ext)) => image_mime(ext).is_some(),
+        None => false,
+    }
+}
+
+/// 保存一张编辑器图片，返回图片 id（即文件名）。
+/// 前端传纯 base64（不含 `data:image/...;base64,` 前缀）；id 由内容哈希决定，
+/// 同一张图重复插入会命中已存在的文件直接返回，不重复写盘。
+#[tauri::command]
+fn save_image(base64: String) -> Result<String, String> {
+    let data = b64_decode(&base64)?;
+    if data.is_empty() {
+        return Err("图片内容是空的".into());
+    }
+    if data.len() > 12 * 1024 * 1024 {
+        return Err("图片超过 12MB，请压缩后再插入".into());
+    }
+    let ext = detect_image_ext(&data)
+        .ok_or_else(|| "不支持的图片格式（支持 PNG/JPG/GIF/WebP/BMP）".to_string())?;
+    let id = format!("{:016x}.{}", fnv1a64(&data), ext);
+
+    let dir = images_dir();
+    fs::create_dir_all(&dir).map_err(|e| format!("无法创建图片目录：{e}"))?;
+    let path = dir.join(&id);
+    // 去重：文件已存在说明这张图之前就存过，直接返回 id
+    if !path.exists() {
+        atomic_write(&path, &data).map_err(|e| format!("写入图片失败：{e}"))?;
+    }
+    Ok(id)
+}
+
+/// 读取一张图片，返回 data URL（前端可直接塞进 <img src>，不必再转 blob）。
+#[tauri::command]
+fn read_image(id: String) -> Result<String, String> {
+    let id = id.trim();
+    if !valid_image_id(id) {
+        return Err("图片 id 不合法".into());
+    }
+    let path = images_dir().join(id);
+    if !path.is_file() {
+        return Err("图片不存在".into());
+    }
+    let data = fs::read(&path).map_err(|e| format!("读取图片失败：{e}"))?;
+    // 能通过 valid_image_id 就说明后缀合法，这里的兜底不会真的走到
+    let ext = id.rsplit_once('.').map(|(_, e)| e).unwrap_or("png");
+    let mime = image_mime(ext).unwrap_or("image/png");
+    Ok(format!("data:{mime};base64,{}", b64_encode(&data)))
+}
+
+/// 跳过 HTML 属性之间的空白（空格 / 制表符 / 换行）。
+/// 用 &mut 游标而不是返回值：调用方只关心“停在哪个非空白字节上”。
+fn skip_html_space(bytes: &[u8], j: &mut usize) {
+    while *j < bytes.len() && matches!(bytes[*j], b' ' | b'\t' | b'\r' | b'\n') {
+        *j += 1;
+    }
+}
+
+/// 从笔记正文里收集所有 `data-mp-image` 引用的图片 id。
+/// 不用 regex：TipTap 输出的是固定形态的 HTML 属性，简单扫描就够，
+/// 也避免为一次清理引入正则依赖（本项目离线构建，不加 crate）。
+///
+/// 方向性很重要：这里漏扫一个 id，24 小时后就会把仍在使用的图当孤儿删掉，
+/// 所以宁可多认（误报只影响删除时机，不丢数据），解析上留足余量。
+fn collect_used_image_ids(html: &str, out: &mut Vec<String>) {
+    // 只匹配属性名、不把 `=` 写死：HTML 允许 `data-mp-image = "x"` 这种等号两侧带空白的写法
+    const KEY: &str = "data-mp-image";
+    let bytes = html.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let pos = match html[i..].find(KEY) {
+            Some(p) => i + p,
+            None => break,
+        };
+        let mut j = pos + KEY.len();
+        skip_html_space(bytes, &mut j);
+        if j >= bytes.len() {
+            break;
+        }
+        if bytes[j] != b'=' {
+            // 只是恰好同名的前缀（例如 data-mp-image-x）→ 跳过继续往后找
+            i = j;
+            continue;
+        }
+        j += 1;
+        skip_html_space(bytes, &mut j);
+        if j >= bytes.len() {
+            break;
+        }
+        let quote = bytes[j];
+        if quote != b'"' && quote != b'\'' {
+            // 不是引号包起来的值（畸形片段）→ 跳过这一段继续往后找
+            i = j;
+            continue;
+        }
+        j += 1;
+        let start = j;
+        while j < bytes.len() && bytes[j] != quote {
+            j += 1;
+        }
+        // start 紧跟在 ASCII 引号后、j 落在 ASCII 引号上，都是合法 UTF-8 边界
+        let v = &html[start..j];
+        if !v.is_empty() && !out.iter().any(|x| x == v) {
+            out.push(v.to_string());
+        }
+        i = j.saturating_add(1);
+    }
+}
+
+/// 保存成功后清理不再被引用的孤儿图，避免磁盘无限增长。
+///
+/// 两个刻意保守的地方：
+///   1) 只删修改时间早于 24 小时的文件 —— 撤销/重做时图片常常是「刚删又恢复」，
+///      立刻删会把用户正要恢复的图打掉；
+///   2) 读不出修改时间就跳过 —— 宁可有残留，也不误删。
+fn prune_unused_images(notes: &[Note]) {
+    let dir = images_dir();
+    let rd = match fs::read_dir(&dir) {
+        Ok(r) => r,
+        Err(_) => return, // 还没有 images 目录 = 没图可清
+    };
+    let mut used: Vec<String> = Vec::new();
+    for note in notes {
+        collect_used_image_ids(&note.content, &mut used);
+    }
+    let now = std::time::SystemTime::now();
+    let min_age = std::time::Duration::from_secs(24 * 60 * 60);
+    for e in rd.flatten() {
+        if !e.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let name = e.file_name().to_string_lossy().into_owned();
+        if used.iter().any(|u| u == &name) {
+            continue;
+        }
+        let modified = match e.metadata().and_then(|m| m.modified()) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let age = match now.duration_since(modified) {
+            Ok(d) => d,
+            Err(_) => continue, // 修改时间在未来（系统时钟被调过）→ 不碰
+        };
+        if age < min_age {
+            continue;
+        }
+        let _ = fs::remove_file(e.path()); // 单张删除失败不影响其它
+    }
+}
+
+/// 切换数据目录时把图片一起搬过去。
+/// 与 notes.json / refblocks.json 的搬移语义保持一致：只复制、不删源文件
+/// （旧目录仍是一份完整备份）；目标已有同名文件就跳过 —— 同名 = 同 id = 同内容。
+/// 失败不报错：笔记已经搬好了，图片搬不动不该让整个切换回滚。
+fn copy_images_dir(src_root: &Path, dst_root: &Path) {
+    let src = src_root.join("images");
+    let rd = match fs::read_dir(&src) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let dst = dst_root.join("images");
+    if fs::create_dir_all(&dst).is_err() {
+        return;
+    }
+    for e in rd.flatten() {
+        if !e.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let target = dst.join(e.file_name());
+        if target.exists() {
+            continue;
+        }
+        let _ = fs::copy(e.path(), &target);
+    }
+}
+
 // ============ 窗口控制（前端通过 invoke 调用） ============
 
 #[tauri::command]
@@ -1104,6 +1401,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_data,
             save_data,
+            save_image,
+            read_image,
             minimize_window,
             toggle_maximize,
             close_window,

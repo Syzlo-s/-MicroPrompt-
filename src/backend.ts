@@ -114,3 +114,17 @@ export const exportNotes = (
   dir: string,
   files: ExportFile[],
 ): Promise<number> => invoke<number>("export_notes", { dir, files });
+
+/* ============================================================
+ * 编辑器图片（4.9.0）
+ * 图片落盘在 <笔记目录>/images/，正文只存 image id；
+ * 这样 notes.json 体积不会随图片变大，自动保存不受影响。
+ * ============================================================ */
+
+/** 保存图片（base64，不含 data: 前缀），返回 image id（<hash>.<ext>） */
+export const saveImage = (base64: string): Promise<string> =>
+  invoke<string>("save_image", { base64 });
+
+/** 按 image id 读回图片 data URL（可直接作为 <img src>） */
+export const readImage = (id: string): Promise<string> =>
+  invoke<string>("read_image", { id });

@@ -1,0 +1,292 @@
+/* ============================================================
+   轻提词 V4.9.0 · 编辑器插入图片（图片节点样式）
+   ------------------------------------------------------------
+   图片节点的两种展示（mode 存在正文 data-mp-mode 里，随笔记保存）：
+     normal  = 固定 320×200 的图片框 —— 2400×1600 的大图、64×64 的小图
+               插进来后占用同样大小的编辑区，版面不会忽大忽小；
+     preview = 34px 高的紧凑横条（24px 缩略图 + “图片 / 已收起，点击展开”
+               + 展开按钮），用来把图片暂时收起、明显少占编辑空间。
+
+   编辑器有白纸（#FFFFFF）/ 护眼米黄（#FFF8E7）两种底色，两种都要好看：
+     · 不加写死的白色大色块；图片框淡底、细边用低透明度中性色（rgba(15,23,42,…)），
+       在白底、米黄底上都只是很淡的一层；
+     · 悬停 / 选中的强调色一律走主题变量（--c-brand / rgba(var(--brand-rgb))），
+       换主题色、护眼模式自动跟随，不需要重写样式。
+   ============================================================ */
+
+/* ---------------- 节点外壳 ---------------- */
+
+.mp-image-node {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  /* 图片框固定 320px，永远贴左显示，不随图片原始尺寸变化 */
+  justify-content: flex-start;
+  position: relative;
+  width: 100%;
+  margin: 8px 0 10px;
+  /* 图片区域内不参与文字选中（编辑器里 .ProseMirror * 会统一打开选中，
+     文件末尾有更高权重的补丁再关掉） */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* 预览模式：上下留白收紧，整条只有一行高 */
+.mp-image-node.is-preview {
+  margin: 4px 0 6px;
+}
+
+/* ---------------- 正常模式：固定 320×200 图片框 ---------------- */
+
+.mp-image-frame {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 320px;
+  height: 200px;
+  /* 窄窗时让步收缩，平时始终是 320×200 */
+  max-width: 100%;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 10px;
+  /* 淡色底：白纸 / 护眼米黄纸都自然融入，不用写死白色 */
+  background: rgba(15, 23, 42, 0.035);
+  overflow: hidden;
+}
+
+/* 原图无论多大都按 contain 完整装进固定框：不裁切、不撑大节点 */
+.mp-image-frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 8px;
+  object-fit: contain;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+/* 读取 data URL 的空档 / 读取失败 */
+.mp-image-loading,
+.mp-image-error {
+  padding: 0 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.mp-image-loading {
+  color: var(--c-text-aux);
+}
+
+.mp-image-error {
+  color: var(--c-red);
+}
+
+/* 选中：一圈细品牌色描边（写法与 .mp-divider-selected 一致） */
+.mp-image-node.is-selected .mp-image-frame,
+.mp-image-node.ProseMirror-selectednode .mp-image-frame {
+  outline: 1.5px solid rgba(var(--brand-rgb), 0.5);
+  outline-offset: 1px;
+}
+
+/* ---------------- 悬停工具条：缩成预览 / 删除 ---------------- */
+/*
+   节点外壳占满一整行，图片框只有 320px 宽，
+   所以工具条的 right 按「整行宽度 - 320px + 6px」折算，贴在图片框右上角；
+   窄窗下图片框被 max-width 压到 100%，此时 right 退化为 6px。
+*/
+.mp-image-tools {
+  position: absolute;
+  top: 6px;
+  right: max(6px, calc(100% - 314px));
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition:
+    opacity 0.18s var(--ease-out-cubic),
+    transform 0.18s var(--ease-out-cubic);
+}
+
+/* 只在悬停 / 选中 / 键盘聚焦时淡入，平时不挡图片 */
+.mp-image-node:hover .mp-image-tools,
+.mp-image-node.is-selected .mp-image-tools,
+.mp-image-node:focus-within .mp-image-tools {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+}
+
+/* 22×22 小按钮：半透明底 + 细边，压在图片上也看得清 */
+.mp-image-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: var(--c-text-sub);
+  line-height: 1;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 6px;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  transition:
+    color 0.15s var(--ease-out-cubic),
+    background-color 0.15s var(--ease-out-cubic),
+    border-color 0.15s var(--ease-out-cubic),
+    box-shadow 0.15s var(--ease-out-cubic),
+    transform 0.12s var(--ease-out-cubic);
+}
+
+.mp-image-btn:hover {
+  color: var(--c-brand);
+  background: rgba(var(--brand-rgb), 0.12);
+  border-color: rgba(var(--brand-rgb), 0.4);
+  box-shadow: 0 2px 8px -4px rgba(var(--brand-rgb), 0.5);
+}
+
+.mp-image-btn:active {
+  transform: scale(0.94);
+}
+
+/* 删除：悬停变红（与 .ai-block-btn.danger 同一套配色） */
+.mp-image-btn.danger:hover {
+  color: var(--c-red);
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.35);
+  box-shadow: 0 2px 8px -4px rgba(239, 68, 68, 0.45);
+}
+
+/* 按钮里的图标由 TSX 定 14px（stroke 风格 svg），这里只兜底不换行 */
+.mp-image-btn svg {
+  display: block;
+  flex: none;
+}
+
+/* ---------------- 预览模式：34px 紧凑横条 ---------------- */
+
+.mp-image-chip {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  height: 34px;
+  max-width: min(320px, 100%);
+  padding: 0 5px;
+  color: var(--c-text);
+  cursor: pointer;
+  background: rgba(15, 23, 42, 0.028);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  transition:
+    background-color 0.18s var(--ease-out-cubic),
+    border-color 0.18s var(--ease-out-cubic),
+    box-shadow 0.18s var(--ease-out-cubic);
+}
+
+.mp-image-chip:hover {
+  background: rgba(var(--brand-rgb), 0.06);
+  border-color: rgba(var(--brand-rgb), 0.32);
+  box-shadow: 0 3px 10px -5px rgba(var(--brand-rgb), 0.45);
+}
+
+/* 预览条选中：描边跟着品牌色走，和正常模式选中观感一致 */
+.mp-image-node.is-preview.is-selected .mp-image-chip {
+  border-color: rgba(var(--brand-rgb), 0.45);
+}
+
+/* 24×24 缩略图；图片还没读出来时 TSX 用同尺寸的 span 占位，这里两种都兜住 */
+.mp-image-chip-thumb {
+  display: block;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+  background: rgba(15, 23, 42, 0.07);
+  object-fit: cover;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+/* “图片” */
+.mp-image-chip-text {
+  flex: none;
+  color: var(--c-text);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* “已收起，点击展开” / “图片读取失败”：弱化色，窄窗时省略号收尾 */
+.mp-image-chip-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--c-text-aux);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 20×20 展开按钮：默认透明，悬停才浮出品牌色 */
+.mp-image-chip-btn {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: var(--c-text-aux);
+  line-height: 1;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  transition:
+    color 0.15s var(--ease-out-cubic),
+    background-color 0.15s var(--ease-out-cubic);
+}
+
+.mp-image-chip-btn:hover {
+  color: var(--c-brand);
+  background: rgba(var(--brand-rgb), 0.1);
+}
+
+.mp-image-chip-btn svg {
+  display: flex;
+  flex: none;
+}
+
+/* ---------------- 编辑器内禁止选中文字 ---------------- */
+/* .editor-scroll .ProseMirror * 统一把 user-select 打开了（正文要能选字），
+   图片区域是按钮 / 预览条，选中文字反而影响观感，这里用更高权重关掉 */
+.editor-scroll .ProseMirror .mp-image-node,
+.editor-scroll .ProseMirror .mp-image-node * {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* ---------------- 减少动效 ---------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .mp-image-tools,
+  .mp-image-btn,
+  .mp-image-chip,
+  .mp-image-chip-btn {
+    transition: none !important;
+  }
+
+  .mp-image-btn:active {
+    transform: none;
+  }
+}
