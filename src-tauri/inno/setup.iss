@@ -5,11 +5,11 @@
 ; 4.6.0：安装位置可选（默认 D:\轻提词），并在安装目录下建好 data 文件夹
 ;        —— 笔记默认就存在「安装目录\data」，卸载时该文件夹不会被删除
 #define MyAppName "轻提词"
-#define MyAppVersion "4.8.6"
+#define MyAppVersion "4.9.0"
 #define MyAppPublisher "MicroPrompt"
 #define MyAppExeName "轻提词.exe"
 #define MyAppDataDir "data"
-#define SrcRoot "D:\Desktop\桌面速记\轻提词V4.0\src-tauri"
+#define SrcRoot "D:\Desktop\MicroPrompt\轻提词V4.0源码\src-tauri"
 
 [Setup]
 AppId={{8D7B2C9A-1F3E-4A6B-9C2D-5E6F7A8B9C0D}
@@ -30,8 +30,8 @@ WizardSizePercent=110
 WizardImageFile={#SrcRoot}\nsis\sidebarImage.bmp
 WizardSmallImageFile={#SrcRoot}\inno\small.png
 SetupIconFile={#SrcRoot}\icons\icon.ico
-OutputDir=D:\Desktop\桌面速记\轻提词V4.0\release\installer
-OutputBaseFilename=轻提词安装包_v4.8.6
+OutputDir=D:\Desktop\MicroPrompt\轻提词V4.0源码\release\installer
+OutputBaseFilename=轻提词安装包_v4.9.0
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
